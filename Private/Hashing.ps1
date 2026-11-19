@@ -1,6 +1,6 @@
 Set-StrictMode -Version Latest
 
-function Get-KlipAroundCrc32CHexForBytes {
+function Get-KlipAroundCrc32CHexForByteArray {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
@@ -39,7 +39,7 @@ function Get-KlipAroundCrc32CHexForBytes {
     return ([uint32]$crcValue).ToString('X8')
 }
 
-function Get-KlipAroundSha256HexForBytes {
+function Get-KlipAroundSha256HexForByteArray {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
@@ -58,7 +58,7 @@ function Get-KlipAroundSha256HexForBytes {
     return -join ($hashBytes | ForEach-Object { $_.ToString('X2') })
 }
 
-function Get-KlipAroundBlockChecksumHexForBytes {
+function Get-KlipAroundBlockChecksumHexForByteArray {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
@@ -71,8 +71,8 @@ function Get-KlipAroundBlockChecksumHexForBytes {
     )
 
     switch ($Algorithm) {
-        'CRC32C' { return (Get-KlipAroundCrc32CHexForBytes -Bytes $Bytes) }
-        'SHA256' { return (Get-KlipAroundSha256HexForBytes -Bytes $Bytes) }
+        'CRC32C' { return (Get-KlipAroundCrc32CHexForByteArray -Bytes $Bytes) }
+        'SHA256' { return (Get-KlipAroundSha256HexForByteArray -Bytes $Bytes) }
         default { throw "Unsupported block checksum algorithm '$Algorithm'." }
     }
 }

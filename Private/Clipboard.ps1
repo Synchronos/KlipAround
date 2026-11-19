@@ -228,6 +228,7 @@ namespace KlipAround
 
 function New-KlipAroundClipboardListener {
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Listener setup is an internal part of clipboard monitoring.')]
     param()
 
     if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
@@ -350,6 +351,7 @@ function Invoke-KlipAroundXclip {
 
 function Set-KlipAroundClipboardText {
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Internal protocol writes cannot be individually skipped.')]
     param(
         [Parameter(Mandatory)]
         [string]$Text,

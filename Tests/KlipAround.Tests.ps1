@@ -88,7 +88,7 @@ Describe 'KlipAround envelope and block helpers' {
                 @{ Bytes = [Text.Encoding]::ASCII.GetBytes('123456789'); Expected = 'E3069283' }
             )
             foreach ($vector in $vectors) {
-                Get-KlipAroundCrc32CHexForBytes -Bytes $vector.Bytes | Should -BeExactly $vector.Expected
+                Get-KlipAroundCrc32CHexForByteArray -Bytes $vector.Bytes | Should -BeExactly $vector.Expected
             }
         }
 
@@ -291,7 +291,7 @@ Describe 'Received file names' {
             $target = Join-Path $TestDrive 'replace.bin'
             [IO.File]::WriteAllText($target, 'original')
             $script:receiveTestWaitCount = 0
-            $script:replacementHash = Get-KlipAroundBlockChecksumHexForBytes -Bytes ([byte[]]@(42)) -Algorithm SHA256
+            $script:replacementHash = Get-KlipAroundBlockChecksumHexForByteArray -Bytes ([byte[]]@(42)) -Algorithm SHA256
             Mock Wait-KlipAroundMessage {
                 $script:receiveTestWaitCount++
                 switch ($script:receiveTestWaitCount) {
@@ -340,6 +340,22 @@ Describe 'Benchmark safety and statistics' {
             $result.Results[0].ReceiveFolderPath | Should -Not -Be $oldRun
             Test-Path -LiteralPath $result.Results[0].ReceiveFolderPath | Should -BeFalse
             $result.Results[0].Succeeded | Should -BeFalse
+        }
+
+        It 'reports job cleanup failures without losing the transfer failure' {
+            Mock Start-Job { [pscustomobject]@{ Id = 123 } }
+            Mock Send-KlipAround { throw 'Simulated transfer failure' }
+            Mock Get-Job { [pscustomobject]@{ State = 'Running' } }
+            Mock Stop-Job { throw 'Simulated stop failure' }
+            Mock Remove-Job { throw 'Simulated remove failure' }
+
+            $warnings = @()
+            $result = Test-KlipAroundPerformance -DestinationPath $TestDrive -BlockSizesKB 4 -WindowSizes 1 -Iterations 1 -TestFileSizeMB 1 -TimeoutSeconds 10 -WarningAction SilentlyContinue -WarningVariable warnings
+            $result.Results[0].Succeeded | Should -BeFalse
+            $result.Results[0].Error | Should -Match 'Simulated transfer failure'
+            ($warnings | Out-String) | Should -Match 'Simulated stop failure'
+            ($warnings | Out-String) | Should -Match 'Simulated remove failure'
+            Should -Invoke Remove-Job -Times 1 -Exactly
         }
     }
 }
@@ -434,6 +450,37 @@ Describe 'Linux clipboard errors' {
             Mock Get-KlipAroundClipboardText { throw [System.InvalidOperationException]::new('Clipboard unavailable') }
             { Wait-KlipAroundMessage -SessionId 'test' -ExpectedRole Sender -ExpectedMessageType HELLO -TimeoutSeconds 1 } |
                 Should -Throw '*Clipboard unavailable*'
+        }
+
+        It 'reports listener disposal failures while preserving the received message' {
+            $script:disposalTestListener = [pscustomobject]@{}
+            $script:disposalTestListener | Add-Member -MemberType ScriptMethod -Name Dispose -Value { throw 'Simulated disposal failure' }
+            $script:disposalTestMessage = New-KlipAroundMessage -SessionId 'test' -Role Sender -MessageType HELLO
+            Mock New-KlipAroundClipboardListener { $script:disposalTestListener }
+            Mock Get-KlipAroundClipboardText { ConvertTo-KlipAroundEnvelope -Message $script:disposalTestMessage }
+
+            $warnings = @()
+            $received = Wait-KlipAroundMessage -SessionId 'test' -ExpectedRole Sender -ExpectedMessageType HELLO -TimeoutSeconds 1 -WarningAction SilentlyContinue -WarningVariable warnings
+            $received.MessageId | Should -Be $script:disposalTestMessage.MessageId
+            ($warnings | Out-String) | Should -Match 'Simulated disposal failure'
+        }
+
+        It 'preserves a clipboard failure when listener disposal also fails' {
+            $script:disposalTestListener = [pscustomobject]@{}
+            $script:disposalTestListener | Add-Member -MemberType ScriptMethod -Name Dispose -Value { throw 'Simulated disposal failure' }
+            Mock New-KlipAroundClipboardListener { $script:disposalTestListener }
+            Mock Get-KlipAroundClipboardText { throw [System.InvalidOperationException]::new('Clipboard unavailable') }
+
+            $warnings = @()
+            $failure = $null
+            try {
+                Wait-KlipAroundMessage -SessionId 'test' -ExpectedRole Sender -ExpectedMessageType HELLO -TimeoutSeconds 1 -WarningAction SilentlyContinue -WarningVariable warnings
+            }
+            catch {
+                $failure = $_
+            }
+            $failure.Exception.Message | Should -Be 'Clipboard unavailable'
+            ($warnings | Out-String) | Should -Match 'Simulated disposal failure'
         }
 
         It 'allows a polling interval for a clipboard read near the message deadline' {
@@ -672,12 +719,12 @@ Describe 'KlipAround clipboard listener' {
                 }
 
                 $receiver = [powershell]::Create()
-                $sender = [powershell]::Create()
+                $senderPowerShell = [powershell]::Create()
                 try {
                     $null = $receiver.AddScript($runTransfer.ToString()).AddArgument($manifest).AddArgument($clipboard).AddArgument($ready).AddArgument($senderReady).AddArgument($sessionId).AddArgument($paths).AddArgument($destination).AddArgument($false).AddArgument($Algorithm).AddArgument($PrecomputeHash).AddArgument($InputMode)
                     $receiveAsync = $receiver.BeginInvoke()
-                    $null = $sender.AddScript($runTransfer.ToString()).AddArgument($manifest).AddArgument($clipboard).AddArgument($ready).AddArgument($senderReady).AddArgument($sessionId).AddArgument($paths).AddArgument($destination).AddArgument($true).AddArgument($Algorithm).AddArgument($PrecomputeHash).AddArgument($InputMode)
-                    $sendAsync = $sender.BeginInvoke()
+                    $null = $senderPowerShell.AddScript($runTransfer.ToString()).AddArgument($manifest).AddArgument($clipboard).AddArgument($ready).AddArgument($senderReady).AddArgument($sessionId).AddArgument($paths).AddArgument($destination).AddArgument($true).AddArgument($Algorithm).AddArgument($PrecomputeHash).AddArgument($InputMode)
+                    $sendAsync = $senderPowerShell.BeginInvoke()
                     if (-not $ready.Wait(10000)) {
                         throw 'Receiver did not initialize within 10 seconds.'
                     }
@@ -687,10 +734,10 @@ Describe 'KlipAround clipboard listener' {
                         throw "Sender did not complete within $($sendWaitMilliseconds / 1000) seconds."
                     }
                     try {
-                        $sendResult = @($sender.EndInvoke($sendAsync))
+                        $sendResult = @($senderPowerShell.EndInvoke($sendAsync))
                     }
                     catch {
-                        throw "Sender failed: $($_.Exception.Message)`n$($sender.Streams.Error | Out-String)"
+                        throw "Sender failed: $($_.Exception.Message)`n$($senderPowerShell.Streams.Error | Out-String)"
                     }
                     if (-not $receiveAsync.AsyncWaitHandle.WaitOne(30000)) {
                         throw 'Receiver did not complete within 30 seconds.'
@@ -724,9 +771,9 @@ Describe 'KlipAround clipboard listener' {
                     }
                 }
                 finally {
-                    if ($sender.InvocationStateInfo.State -eq 'Running') { $sender.Stop() }
+                    if ($senderPowerShell.InvocationStateInfo.State -eq 'Running') { $senderPowerShell.Stop() }
                     if ($receiver.InvocationStateInfo.State -eq 'Running') { $receiver.Stop() }
-                    $sender.Dispose()
+                    $senderPowerShell.Dispose()
                     $receiver.Dispose()
                     $ready.Dispose()
                     $senderReady.Dispose()

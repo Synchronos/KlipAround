@@ -7,6 +7,7 @@
 /coverage.xml
 
 # PowerShell Gallery packages
+/artifacts/
 *.nupkg
 *.snupkg
 

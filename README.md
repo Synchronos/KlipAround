@@ -83,6 +83,20 @@ From the module folder:
 Import-Module .\KlipAround.psd1 -Force
 ```
 
+### Release package
+
+From a source checkout, use PowerShell with Microsoft.PowerShell.PSResourceGet
+1.1.0 or later to create a clean, local NuGet package:
+
+```powershell
+.\Build\New-KlipAroundPackage.ps1
+```
+
+The package is written to `artifacts` and includes the module, help, README,
+and tests; smoke-test artifacts are excluded. The build does not publish to a
+repository and refuses to overwrite an existing package. Supply
+`-OutputDirectory` to choose another location.
+
 ### Offline bootstrap
 
 On a machine with KlipAround installed, create a self-contained installer:
@@ -191,6 +205,7 @@ Send-KlipAround -Path C:\Temp\A.bin,C:\Temp\B.iso -WindowSize 16 -BlockSize 1310
 - Use `-Verbose` for state/progress details.
 - Use `-Debug` to display raw clipboard envelope messages.
 - Both sender and receiver display progress bars for overall and per-file transfer.
+- Clipboard listener and benchmark job cleanup failures are reported as warnings.
 
 ## Get-Help topics
 

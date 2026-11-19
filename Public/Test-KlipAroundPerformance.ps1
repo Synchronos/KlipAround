@@ -59,6 +59,7 @@ Test-KlipAroundPerformance -BlockSizesKB 64,128,256,512 -WindowSizes 2,4,8 -Bloc
 #>
 function Test-KlipAroundPerformance {
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseUsingScopeModifierInNewRunspaces', '', Justification = 'The job receives these values through its parameters and ArgumentList.')]
     param(
         [Parameter()]
         [ValidateNotNullOrEmpty()]
@@ -219,12 +220,19 @@ function Test-KlipAroundPerformance {
                         finally {
                             if ($receiverJob) {
                                 try {
-                                    if ((Get-Job -Id $receiverJob.Id -ErrorAction SilentlyContinue).State -eq 'Running') {
-                                        Stop-Job -Id $receiverJob.Id -Force -ErrorAction SilentlyContinue | Out-Null
+                                    if ((Get-Job -Id $receiverJob.Id -ErrorAction Stop).State -eq 'Running') {
+                                        Stop-Job -Id $receiverJob.Id -ErrorAction Stop | Out-Null
                                     }
                                 }
-                                catch {}
-                                Remove-Job -Id $receiverJob.Id -Force -ErrorAction SilentlyContinue
+                                catch {
+                                    Write-Warning "Could not stop benchmark receiver job '$($receiverJob.Id)': $($_.Exception.Message)"
+                                }
+                                try {
+                                    Remove-Job -Id $receiverJob.Id -Force -ErrorAction Stop
+                                }
+                                catch {
+                                    Write-Warning "Could not remove benchmark receiver job '$($receiverJob.Id)': $($_.Exception.Message)"
+                                }
                             }
                         }
 

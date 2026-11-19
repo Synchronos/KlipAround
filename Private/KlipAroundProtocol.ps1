@@ -8,6 +8,7 @@ $script:KlipAroundMarkers = @{
 
 function New-KlipAroundMessage {
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Constructs an in-memory protocol message.')]
     param(
         [Parameter(Mandatory)]
         [string]$SessionId,
@@ -302,6 +303,7 @@ function Wait-KlipAroundMessage {
                 $clipboardListener.Dispose()
             }
             catch {
+                Write-Warning "Could not dispose the clipboard listener for session '$SessionId': $($_.Exception.Message)"
             }
         }
     }
@@ -311,6 +313,7 @@ function Wait-KlipAroundMessage {
 
 function New-KlipAroundDataBlock {
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Constructs an in-memory data block.')]
     param(
         [Parameter(Mandatory)]
         [int]$Sequence,
@@ -328,7 +331,7 @@ function New-KlipAroundDataBlock {
         Seq               = $Sequence
         Length            = $Bytes.Length
         ChecksumAlgorithm = $ChecksumAlgorithm
-        Checksum          = Get-KlipAroundBlockChecksumHexForBytes -Bytes $Bytes -Algorithm $ChecksumAlgorithm
+        Checksum          = Get-KlipAroundBlockChecksumHexForByteArray -Bytes $Bytes -Algorithm $ChecksumAlgorithm
         Data              = [Convert]::ToBase64String($Bytes)
     }
 }
@@ -372,7 +375,7 @@ function Expand-KlipAroundDataBlock {
         throw "Block $($Block.Seq) missing checksum value."
     }
 
-    $actual = Get-KlipAroundBlockChecksumHexForBytes -Bytes $bytes -Algorithm $algorithm
+    $actual = Get-KlipAroundBlockChecksumHexForByteArray -Bytes $bytes -Algorithm $algorithm
     if ($actual -ne $expected) {
         throw "Block $($Block.Seq) checksum mismatch."
     }
