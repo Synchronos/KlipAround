@@ -1,0 +1,65 @@
+TOPIC
+    about_KlipAround
+
+SHORT DESCRIPTION
+    KlipAround is a reliable, HDLC-inspired clipboard file transfer protocol.
+
+LONG DESCRIPTION
+    KlipAround transfers files between two PowerShell sessions that share a clipboard
+    (for example, local + RDP session).
+
+    The module exports:
+
+        * Send-KlipAround
+        * Receive-KlipAround
+        * New-KlipAroundBootstrap
+        * Test-KlipAroundTransport
+        * Test-KlipAroundPerformance
+
+    Typical usage flow:
+
+        1. Run Test-KlipAroundTransport on both sides (recommended).
+        2. Start Receive-KlipAround on the destination side.
+        3. Start Send-KlipAround on the source side.
+        4. Wait for both commands to complete.
+
+EXAMPLES
+    Example 1: Validate clipboard link
+
+        PS> Test-KlipAroundTransport
+
+    Example 2: Receiver on remote computer/session
+
+        PS> Receive-KlipAround -DestinationPath C:\Temp\Inbox -Verbose
+
+    Example 3: Sender on local computer/session
+
+        PS> Send-KlipAround -Path C:\Temp\Sample.bin -WindowSize 16 -BlockSize 131072 -BlockChecksumAlgorithm SHA256 -Verbose
+
+    Example 4: Include protocol traces
+
+        PS> Send-KlipAround -Path C:\Temp\Sample.bin -Debug
+        PS> Receive-KlipAround -DestinationPath C:\Temp\Inbox -Debug
+
+    Example 5: Benchmark block/window sizing
+
+        PS> Test-KlipAroundPerformance -BlockSizesKB 64,128,256,512 -WindowSizes 1,2,4,8 -BlockChecksumAlgorithms CRC32C,SHA256 -Iterations 5
+
+    Example 6: Create and run an offline installer
+
+        PS> New-KlipAroundBootstrap -Path .\Install-KlipAround.ps1
+        PS> .\Install-KlipAround.ps1 -Scope CurrentUser
+
+NOTES
+    * Sender and receiver must run concurrently in clipboard-connected sessions.
+    * Progress bars are shown for overall transfer and per-file block progress.
+    * Use matching or compatible TimeoutSeconds values on both ends.
+    * The generated installer supports CurrentUser and AllUsers scopes.
+    * Only run bootstrap scripts from sources you trust.
+
+RELATED LINKS
+    Get-Help Send-KlipAround -Full
+    Get-Help Receive-KlipAround -Full
+    Get-Help New-KlipAroundBootstrap -Full
+    Get-Help Test-KlipAroundTransport -Full
+    Get-Help Test-KlipAroundPerformance -Full
