@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            shell: powershell
+          - os: windows-2022
+            shell: pwsh
+          - os: ubuntu-24.04
+            shell: pwsh
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test dependencies
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-Module Pester -RequiredVersion 6.2.0 -Repository PSGallery -Scope CurrentUser -Force -SkipPublisherCheck
+          if ($PSVersionTable.PSEdition -eq 'Core') {
+              Install-Module Microsoft.PowerShell.PSResourceGet -MinimumVersion 1.1.0 -Repository PSGallery -Scope CurrentUser -Force
+              Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Repository PSGallery -Scope CurrentUser -Force
+          }
+      - name: Validate manifest
+        run: Test-ModuleManifest -Path ./KlipAround.psd1 -ErrorAction Stop
+      - name: Run module tests
+        run: |
+          Import-Module Pester -RequiredVersion 6.2.0 -Force
+          $config = New-PesterConfiguration
+          $config.Run.Path = './Tests/KlipAround.Tests.ps1'
+          $config.Run.Exit = $true
+          Invoke-Pester -Configuration $config
+      - name: Analyze and test packaging
+        if: matrix.shell == 'pwsh'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module PSScriptAnalyzer -RequiredVersion 1.25.0
+          $errors = @(Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error -ErrorAction Stop)
+          if ($errors.Count -gt 0) {
+              $errors | Format-List
+              throw "PSScriptAnalyzer found $($errors.Count) error(s)."
+          }
+          Import-Module Pester -RequiredVersion 6.2.0 -Force
+          $config = New-PesterConfiguration
+          $config.Run.Path = './Build/New-KlipAroundPackage.Tests.ps1'
+          $config.Run.Exit = $true
+          Invoke-Pester -Configuration $config

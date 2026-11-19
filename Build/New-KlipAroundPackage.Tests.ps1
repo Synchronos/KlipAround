@@ -10,7 +10,7 @@ Describe 'KlipAround release package' {
         $package | Should -Not -BeNullOrEmpty
         $archive = [IO.Compression.ZipFile]::OpenRead($package.FullName)
         try {
-            $required = @('KlipAround.psd1', 'KlipAround.psm1', 'README.md', 'en-US/about_KlipAround.help.txt')
+            $required = @('KlipAround.psd1', 'KlipAround.psm1', 'README.md', 'LICENSE', 'en-US/about_KlipAround.help.txt')
             foreach ($directory in @('Private', 'Public', 'Tests')) {
                 $required += @(Get-ChildItem -LiteralPath (Join-Path $script:projectRoot $directory) -Filter '*.ps1' -File | ForEach-Object {
                     "$directory/$($_.Name)"

@@ -108,6 +108,30 @@ Describe 'KlipAround envelope and block helpers' {
     }
 }
 
+Describe 'Module import paths' {
+    It 'exports commands when the module path contains wildcard characters' {
+        $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+        $moduleCopy = Join-Path (Get-Item -LiteralPath $TestDrive).FullName 'module-[literal]'
+        [void][IO.Directory]::CreateDirectory($moduleCopy)
+        foreach ($item in @('KlipAround.psd1', 'KlipAround.psm1', 'Private', 'Public')) {
+            Copy-Item -LiteralPath (Join-Path $sourceRoot $item) -Destination $moduleCopy -Recurse
+        }
+        $runspace = [powershell]::Create()
+        try {
+            $null = $runspace.AddCommand('Import-Module').AddParameter('Name', (Join-Path $moduleCopy 'KlipAround.psd1')).AddParameter('PassThru', $true)
+            $module = @($runspace.Invoke())
+            if ($runspace.HadErrors) { throw ($runspace.Streams.Error | Out-String) }
+            $module.Count | Should -Be 1
+            foreach ($name in @('Send-KlipAround', 'Receive-KlipAround', 'New-KlipAroundBootstrap', 'Test-KlipAroundTransport', 'Test-KlipAroundPerformance')) {
+                $module[0].ExportedFunctions.ContainsKey($name) | Should -BeTrue
+            }
+        }
+        finally {
+            $runspace.Dispose()
+        }
+    }
+}
+
 Describe 'Offline bootstrap installer' {
     BeforeEach {
         $script:bootstrapTestRoot = Join-Path (Get-Item -LiteralPath $TestDrive).FullName ([guid]::NewGuid().ToString('N'))
@@ -145,7 +169,7 @@ Describe 'Offline bootstrap installer' {
         $installed.Version | Should -Be ([version]$sourceManifest.ModuleVersion).ToString()
         $installed.Path | Should -Be (Join-Path (Join-Path $script:moduleBase 'KlipAround') $installed.Version)
 
-        $relativeFiles = @('KlipAround.psd1', 'KlipAround.psm1', 'en-US/about_KlipAround.help.txt')
+        $relativeFiles = @('KlipAround.psd1', 'KlipAround.psm1', 'LICENSE', 'en-US/about_KlipAround.help.txt')
         foreach ($directory in @('Private', 'Public')) {
             $relativeFiles += @(Get-ChildItem -LiteralPath (Join-Path $sourceRoot $directory) -Filter '*.ps1' -File | ForEach-Object { "$directory/$($_.Name)" })
         }
@@ -267,6 +291,8 @@ Describe 'Received file names' {
         It 'preserves an existing file when a forced transfer fails verification' {
             $target = Join-Path $TestDrive 'existing.bin'
             [IO.File]::WriteAllText($target, 'original')
+            $otherPartial = Join-Path $TestDrive 'existing.bin.preserved.kliparound.part'
+            [IO.File]::WriteAllText($otherPartial, 'keep')
             $script:receiveTestWaitCount = 0
             Mock Wait-KlipAroundMessage {
                 $script:receiveTestWaitCount++
@@ -285,6 +311,24 @@ Describe 'Received file names' {
             { Receive-KlipAround -DestinationPath $TestDrive -SessionId 'test' -Force -TimeoutSeconds 1 } |
                 Should -Throw '*hash mismatch*'
             [IO.File]::ReadAllText($target) | Should -Be 'original'
+            [IO.File]::ReadAllText($otherPartial) | Should -Be 'keep'
+            @(Get-ChildItem -LiteralPath $TestDrive -Filter 'existing.bin.*.kliparound.part').Count | Should -Be 1
+        }
+
+        It 'removes its partial file when a transfer times out' {
+            $script:receiveTestWaitCount = 0
+            Mock Wait-KlipAroundMessage {
+                $script:receiveTestWaitCount++
+                switch ($script:receiveTestWaitCount) {
+                    1 { return [pscustomobject]@{ MessageType = 'HELLO'; Payload = [pscustomobject]@{ FileCount = 1 } } }
+                    2 { return [pscustomobject]@{ MessageType = 'FILE_META'; Payload = [pscustomobject]@{ FileIndex = 0; Name = 'timeout.bin'; Length = 1; Sha256 = ''; BlockSize = 4096; TotalBlocks = 1; BlockChecksumAlgorithm = 'SHA256' } } }
+                    default { throw 'Simulated timeout' }
+                }
+            }
+            Mock Publish-KlipAroundMessage { param($Message) return $Message }
+            { Receive-KlipAround -DestinationPath $TestDrive -SessionId 'test' -TimeoutSeconds 1 } |
+                Should -Throw '*Simulated timeout*'
+            @(Get-ChildItem -LiteralPath $TestDrive -Filter 'timeout.bin.*.kliparound.part').Count | Should -Be 0
         }
 
         It 'atomically replaces an existing file after successful verification' {
@@ -373,10 +417,28 @@ Describe 'Test-KlipAroundTransport' {
             }
         }
 
-        It 'returns success and restores clipboard by default' {
+        It 'does not access the clipboard without explicit permission' {
             $result = Test-KlipAroundTransport -ProbeClipboardBytes 4096
+            $result.Succeeded | Should -BeFalse
+            $result.Message | Should -Match '-NoRestoreClipboard'
+            $result.ProbeBytesWritten | Should -Be 0
+            Should -Invoke Set-KlipAroundClipboardText -Times 0 -Exactly
+            Should -Invoke Get-KlipAroundClipboardText -Times 0 -Exactly
+            $script:kliparoundTestClipboardText | Should -Be 'ORIGINAL'
+        }
+
+        It 'runs and leaves the probe on the clipboard with explicit permission' {
+            $result = Test-KlipAroundTransport -ProbeClipboardBytes 4096 -NoRestoreClipboard
             $result.Succeeded | Should -Be $true
             $result.RoundTripMatch | Should -Be $true
+            $script:kliparoundTestClipboardText | Should -Match '^\[KLIPAROUND-PROBE\]'
+        }
+
+        It 'reports clipboard errors after an authorized probe' {
+            Mock Set-KlipAroundClipboardText { throw 'Clipboard unavailable' }
+            $result = Test-KlipAroundTransport -ProbeClipboardBytes 4096 -NoRestoreClipboard
+            $result.Succeeded | Should -BeFalse
+            $result.Message | Should -Match 'Clipboard unavailable'
         }
     }
 }
@@ -384,6 +446,10 @@ Describe 'Test-KlipAroundTransport' {
 Describe 'Linux clipboard errors' {
     InModuleScope KlipAround {
         It 'reports when xclip is unavailable' {
+            if ($PSVersionTable.PSEdition -eq 'Desktop') {
+                Set-ItResult -Skipped -Because 'The xclip subprocess requires PowerShell Core on Linux.'
+                return
+            }
             $originalPath = $env:PATH
             $originalDisplay = $env:DISPLAY
             try {
@@ -521,7 +587,7 @@ Describe 'Linux clipboard errors' {
             $originalDisplay = $env:DISPLAY
             try {
                 $env:DISPLAY = ':65530'
-                $result = Test-KlipAroundTransport -ProbeClipboardBytes 256
+                $result = Test-KlipAroundTransport -ProbeClipboardBytes 256 -NoRestoreClipboard
                 $result.Succeeded | Should -BeFalse
                 $result.Message | Should -Match 'xclip failed'
                 { Receive-KlipAround -DestinationPath $TestDrive -TimeoutSeconds 1 } |

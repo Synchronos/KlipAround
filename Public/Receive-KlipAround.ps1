@@ -61,6 +61,7 @@ function Receive-KlipAround {
     $processedFiles = 0
     $completedFileIndexes = New-Object 'System.Collections.Generic.HashSet[int]'
     $expectedFileCount = 0
+    $tempPath = $null
 
     try {
         if ([string]::IsNullOrWhiteSpace($SessionId)) {
@@ -224,11 +225,13 @@ function Receive-KlipAround {
 
             Write-Progress -Id $overallProgressId -Activity 'KlipAround receive' -Status "Receiving file $($fileIndex + 1) of ${expectedFileCount}: $fileName" -PercentComplete ([int](($fileIndex / [double][Math]::Max(1,$expectedFileCount)) * 100))
 
-            $tempPath = $targetPath + '.' + [guid]::NewGuid().ToString('N') + '.kliparound.part'
-            $stream = [System.IO.File]::Open($tempPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-            $streamHasher = [System.Security.Cryptography.SHA256]::Create()
+            $candidateTempPath = $targetPath + '.' + [guid]::NewGuid().ToString('N') + '.kliparound.part'
+            $stream = [System.IO.File]::Open($candidateTempPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+            $tempPath = $candidateTempPath
+            $streamHasher = $null
             $streamedFileHash = $null
             try {
+                $streamHasher = [System.Security.Cryptography.SHA256]::Create()
                 $metaAck = New-KlipAroundMessage -SessionId $SessionId -Role Receiver -MessageType FILE_META_ACK -Payload @{
                     FileIndex = $fileIndex
                     Accepted  = $true
@@ -336,8 +339,12 @@ function Receive-KlipAround {
             }
             finally {
                 Write-Progress -Id $fileProgressId -ParentId $overallProgressId -Activity "Receiving $fileName" -Completed
-                $streamHasher.Dispose()
-                $stream.Dispose()
+                try {
+                    if ($streamHasher) { $streamHasher.Dispose() }
+                }
+                finally {
+                    $stream.Dispose()
+                }
             }
 
             do {
@@ -382,6 +389,7 @@ function Receive-KlipAround {
             else {
                 [IO.File]::Move($tempPath, $targetPath)
             }
+            $tempPath = $null
             $fileInfo = Get-Item -LiteralPath $targetPath -ErrorAction Stop
             [void]$receivedFiles.Add($fileInfo)
 
@@ -399,6 +407,14 @@ function Receive-KlipAround {
         }
     }
     finally {
+        if ($null -ne $tempPath -and [IO.File]::Exists($tempPath)) {
+            try {
+                [IO.File]::Delete($tempPath)
+            }
+            catch {
+                Write-Warning "Could not remove partial file '$tempPath': $($_.Exception.Message)"
+            }
+        }
         Write-Progress -Id $fileProgressId -ParentId $overallProgressId -Activity 'Receiving file' -Completed
         Write-Progress -Id $overallProgressId -Activity 'KlipAround receive' -Completed
     }

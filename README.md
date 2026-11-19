@@ -93,7 +93,7 @@ From a source checkout, use PowerShell with Microsoft.PowerShell.PSResourceGet
 ```
 
 The package is written to `artifacts` and includes the module, help, README,
-and tests; smoke-test artifacts are excluded. The build does not publish to a
+license, and tests; smoke-test artifacts are excluded. The build does not publish to a
 repository and refuses to overwrite an existing package. Supply
 `-OutputDirectory` to choose another location.
 
@@ -164,8 +164,12 @@ Invoke-Pester -Path ./Tests/KlipAround.Tests.ps1
 ### 1) Validate transport link
 
 ```powershell
-Test-KlipAroundTransport -ProbeClipboardBytes 20000000
+Test-KlipAroundTransport -ProbeClipboardBytes 20000000 -NoRestoreClipboard
 ```
+
+The probe overwrites the clipboard and cannot restore its previous contents.
+Without `-NoRestoreClipboard`, it does not access the clipboard and reports
+that explicit permission is required.
 
 ### 2) Receiver side
 
@@ -228,3 +232,7 @@ Test-KlipAroundPerformance -BlockSizesKB 64,128,256,512 -WindowSizes 1,2,4,8 -Bl
 
 Each benchmark uses a new, uniquely named directory under the destination so it
 does not overwrite pre-existing files.
+
+## License
+
+KlipAround is licensed under the [MIT License](./LICENSE).

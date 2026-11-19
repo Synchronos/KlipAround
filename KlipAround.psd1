@@ -25,7 +25,7 @@
     PrivateData = @{
         PSData = @{
             Tags       = @('Clipboard', 'Transfer', 'PowerShell', 'HDLC', 'KlipAround', 'PSEdition_Desktop', 'PSEdition_Core', 'Windows', 'Linux')
-            LicenseUri = 'https://opensource.org/licenses/MIT'
+            LicenseUri = 'https://github.com/Synchronos/KlipAround/blob/main/LICENSE'
             ProjectUri = 'https://github.com/Synchronos/KlipAround'
         }
     }

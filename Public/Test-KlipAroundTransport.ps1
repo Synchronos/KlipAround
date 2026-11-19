@@ -7,6 +7,8 @@ Runs a clipboard transport preflight probe for KlipAround.
 .DESCRIPTION
 Test-KlipAroundTransport writes probe text to the clipboard and reads it back to
 verify that clipboard transport is operational in the current environment.
+The probe runs only when -NoRestoreClipboard explicitly permits replacing the
+clipboard. The previous clipboard contents cannot be restored.
 
 Use this command before starting sender/receiver on different computers or across RDP.
 
@@ -14,13 +16,13 @@ Use this command before starting sender/receiver on different computers or acros
 Approximate UTF-8 byte count used for the roundtrip probe.
 
 .PARAMETER NoRestoreClipboard
-Leaves the probe text on the clipboard. By default, the original clipboard text is restored.
+Allows the probe to replace the clipboard. The previous contents are not restored.
 
 .EXAMPLE
-Test-KlipAroundTransport
+Test-KlipAroundTransport -NoRestoreClipboard
 
 .EXAMPLE
-Test-KlipAroundTransport -ProbeClipboardBytes 20000000
+Test-KlipAroundTransport -ProbeClipboardBytes 20000000 -NoRestoreClipboard
 #>
 function Test-KlipAroundTransport {
     [CmdletBinding()]
@@ -36,36 +38,26 @@ function Test-KlipAroundTransport {
     $sessionName = [Environment]::GetEnvironmentVariable('SESSIONNAME')
     $isRemoteDesktop = -not [string]::IsNullOrWhiteSpace($sessionName) -and $sessionName.StartsWith('RDP-', [StringComparison]::OrdinalIgnoreCase)
 
-    $originalClipboardText = $null
-    $hadOriginalClipboard = $false
-    try {
-        $originalClipboardText = Get-KlipAroundClipboardText
-        $hadOriginalClipboard = $true
-    }
-    catch {
-        Write-Verbose 'Could not read existing clipboard text before probe.'
-    }
-
-    $prefix = "[KLIPAROUND-PROBE][$([guid]::NewGuid().ToString('N'))]"
-    $prefixBytes = [Text.Encoding]::UTF8.GetByteCount($prefix)
-    $fillByteCount = [Math]::Max(0, $ProbeClipboardBytes - $prefixBytes)
-    $probeText = if ($fillByteCount -gt 0) { $prefix + ('A' * $fillByteCount) } else { $prefix }
-    $probeByteCount = [Text.Encoding]::UTF8.GetByteCount($probeText)
-
     $echoText = $null
     $roundTripMatch = $false
     $errorMessage = $null
-    try {
-        Set-KlipAroundClipboardText -Text $probeText
-        $echoText = Get-KlipAroundClipboardText
-        $roundTripMatch = ($echoText -ceq $probeText)
+    $probeByteCount = 0
+    if (-not $NoRestoreClipboard) {
+        $errorMessage = 'The probe replaces clipboard contents. Specify -NoRestoreClipboard to explicitly allow this.'
     }
-    catch {
-        $errorMessage = $_.Exception.Message
-    }
-    finally {
-        if (-not $NoRestoreClipboard -and $hadOriginalClipboard) {
-            Set-KlipAroundClipboardText -Text $originalClipboardText
+    else {
+        $prefix = "[KLIPAROUND-PROBE][$([guid]::NewGuid().ToString('N'))]"
+        $prefixBytes = [Text.Encoding]::UTF8.GetByteCount($prefix)
+        $fillByteCount = [Math]::Max(0, $ProbeClipboardBytes - $prefixBytes)
+        $probeText = if ($fillByteCount -gt 0) { $prefix + ('A' * $fillByteCount) } else { $prefix }
+        try {
+            Set-KlipAroundClipboardText -Text $probeText
+            $probeByteCount = [Text.Encoding]::UTF8.GetByteCount($probeText)
+            $echoText = Get-KlipAroundClipboardText
+            $roundTripMatch = ($echoText -ceq $probeText)
+        }
+        catch {
+            $errorMessage = $_.Exception.Message
         }
     }
 

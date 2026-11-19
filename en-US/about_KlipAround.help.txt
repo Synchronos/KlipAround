@@ -26,7 +26,7 @@ LONG DESCRIPTION
 EXAMPLES
     Example 1: Validate clipboard link
 
-        PS> Test-KlipAroundTransport
+        PS> Test-KlipAroundTransport -NoRestoreClipboard
 
     Example 2: Receiver on remote computer/session
 
@@ -52,6 +52,7 @@ EXAMPLES
 
 NOTES
     * Sender and receiver must run concurrently in clipboard-connected sessions.
+    * The transport probe replaces clipboard contents only with -NoRestoreClipboard.
     * Progress bars are shown for overall transfer and per-file block progress.
     * Use matching or compatible TimeoutSeconds values on both ends.
     * The generated installer supports CurrentUser and AllUsers scopes.

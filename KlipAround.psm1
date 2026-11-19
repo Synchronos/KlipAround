@@ -1,11 +1,11 @@
 Set-StrictMode -Version Latest
 
-$privateScripts = Get-ChildItem -Path (Join-Path -Path $PSScriptRoot -ChildPath 'Private') -Filter '*.ps1' -File -ErrorAction Stop
+$privateScripts = Get-ChildItem -LiteralPath (Join-Path -Path $PSScriptRoot -ChildPath 'Private') -Filter '*.ps1' -File -ErrorAction Stop
 foreach ($script in $privateScripts) {
     . $script.FullName
 }
 
-$publicScripts = Get-ChildItem -Path (Join-Path -Path $PSScriptRoot -ChildPath 'Public') -Filter '*.ps1' -File -ErrorAction Stop
+$publicScripts = Get-ChildItem -LiteralPath (Join-Path -Path $PSScriptRoot -ChildPath 'Public') -Filter '*.ps1' -File -ErrorAction Stop
 foreach ($script in $publicScripts) {
     . $script.FullName
 }

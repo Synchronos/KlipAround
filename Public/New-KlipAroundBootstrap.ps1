@@ -62,7 +62,7 @@ function New-KlipAroundBootstrap {
     $manifest = Import-PowerShellDataFile -LiteralPath $manifestPath -ErrorAction Stop
     $moduleVersion = ([version]$manifest.ModuleVersion).ToString()
     $files = New-Object 'System.Collections.Generic.List[object]'
-    foreach ($name in @('KlipAround.psd1', 'KlipAround.psm1')) {
+    foreach ($name in @('KlipAround.psd1', 'KlipAround.psm1', 'LICENSE')) {
         [void]$files.Add([pscustomobject]@{ Path = (Join-Path $moduleRoot $name); Entry = $name })
     }
     foreach ($directory in @('Private', 'Public')) {
@@ -206,7 +206,7 @@ try {
         $archive = [IO.Compression.ZipArchive]::new($memory, [IO.Compression.ZipArchiveMode]::Read)
         try {
             foreach ($entry in $archive.Entries) {
-                if ($entry.FullName -notmatch '^(KlipAround\.psd1|KlipAround\.psm1|(?:Private|Public)/[^/\\]+\.ps1|en-US/about_KlipAround\.help\.txt)$') {
+                if ($entry.FullName -notmatch '^(KlipAround\.psd1|KlipAround\.psm1|LICENSE|(?:Private|Public)/[^/\\]+\.ps1|en-US/about_KlipAround\.help\.txt)$') {
                     throw "Unexpected file in KlipAround payload: '$($entry.FullName)'."
                 }
                 $parts = $entry.FullName.Split('/')
@@ -240,8 +240,8 @@ try {
 
     $manifestPath = Join-Path $staging 'KlipAround.psd1'
     $rootModulePath = Join-Path $staging 'KlipAround.psm1'
-    if (-not [IO.File]::Exists($manifestPath) -or -not [IO.File]::Exists($rootModulePath)) {
-        throw 'The KlipAround payload is missing its module manifest or root module.'
+    if (-not [IO.File]::Exists($manifestPath) -or -not [IO.File]::Exists($rootModulePath) -or -not [IO.File]::Exists((Join-Path $staging 'LICENSE'))) {
+        throw 'The KlipAround payload is missing its module manifest, root module, or license.'
     }
     $manifest = Import-PowerShellDataFile -LiteralPath $manifestPath
     if (([version]$manifest.ModuleVersion).ToString() -ne $version -or $manifest.RootModule -ne 'KlipAround.psm1') {
