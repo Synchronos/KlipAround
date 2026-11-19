@@ -1,1 +1,19 @@
-smoke
+# Local smoke-test artifacts
+/smoke/
+
+# Test and coverage output
+/TestResults/
+/testResults.xml
+/coverage.xml
+
+# PowerShell Gallery packages
+*.nupkg
+*.snupkg
+
+# Temporary and local editor files
+*.log
+*.tmp
+*.swp
+.vs/
+.DS_Store
+Thumbs.db
