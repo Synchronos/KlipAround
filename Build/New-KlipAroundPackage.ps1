@@ -13,6 +13,11 @@ if (Test-Path -LiteralPath $packagePath) {
     throw "Package '$packagePath' already exists. Choose another output directory or remove the existing package."
 }
 
+$sourceCommit = & git -C $moduleRoot rev-parse HEAD
+if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[0-9a-f]{40}$') {
+    throw 'Could not determine the Git commit for the package repository metadata.'
+}
+
 $stagingRoot = Join-Path ([IO.Path]::GetTempPath()) ('kliparound-package-' + [guid]::NewGuid().ToString('N'))
 $stagingModule = Join-Path $stagingRoot 'KlipAround'
 try {
@@ -44,10 +49,27 @@ try {
         finally {
             $stream.Dispose()
         }
-        # Compress-PSResource does not expose NuGet's readme metadata.
+        # Compress-PSResource does not expose these modern NuGet metadata fields.
+        $metadata = $document.package.metadata
+        foreach ($name in @('owners', 'licenseUrl')) {
+            $node = $metadata.SelectSingleNode("*[local-name()='$name']")
+            if ($null -ne $node) {
+                [void]$metadata.RemoveChild($node)
+            }
+        }
+        $license = $document.CreateElement('license', $document.DocumentElement.NamespaceURI)
+        $license.SetAttribute('type', 'expression')
+        $license.InnerText = 'MIT'
+        [void]$metadata.AppendChild($license)
+        $repository = $document.CreateElement('repository', $document.DocumentElement.NamespaceURI)
+        $repository.SetAttribute('type', 'git')
+        $repository.SetAttribute('url', 'https://github.com/Synchronos/KlipAround.git')
+        $repository.SetAttribute('branch', "refs/tags/$($manifest.Version)")
+        $repository.SetAttribute('commit', $sourceCommit)
+        [void]$metadata.AppendChild($repository)
         $readme = $document.CreateElement('readme', $document.DocumentElement.NamespaceURI)
         $readme.InnerText = 'README.md'
-        [void]$document.package.metadata.AppendChild($readme)
+        [void]$metadata.AppendChild($readme)
         $entry.Delete()
         $stream = $archive.CreateEntry('KlipAround.nuspec').Open()
         try {

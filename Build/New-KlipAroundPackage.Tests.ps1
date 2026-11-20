@@ -40,6 +40,17 @@ Describe 'KlipAround release package' {
             $nuspec.package.metadata.projectUrl | Should -Be 'https://github.com/Synchronos/KlipAround'
             $nuspec.package.metadata.readme | Should -Be 'README.md'
             $nuspec.package.metadata.releaseNotes | Should -Be 'https://raw.githubusercontent.com/Synchronos/KlipAround/refs/tags/1.0.1/RELEASE-NOTES.md'
+            $metadata = $nuspec.package.metadata
+            $metadata.license.type | Should -Be 'expression'
+            $metadata.license.InnerText | Should -Be 'MIT'
+            $metadata.SelectSingleNode("*[local-name()='licenseUrl']") | Should -BeNullOrEmpty
+            $metadata.SelectSingleNode("*[local-name()='owners']") | Should -BeNullOrEmpty
+            $metadata.repository.type | Should -Be 'git'
+            $metadata.repository.url | Should -Be 'https://github.com/Synchronos/KlipAround.git'
+            $metadata.repository.branch | Should -Be "refs/tags/$($metadata.version)"
+            $sourceCommit = & git -C $script:projectRoot rev-parse HEAD
+            if ($LASTEXITCODE -ne 0) { throw 'Could not read the expected source commit.' }
+            $metadata.repository.commit | Should -Be $sourceCommit
         }
         finally {
             $archive.Dispose()

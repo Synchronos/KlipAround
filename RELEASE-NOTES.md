@@ -4,6 +4,7 @@
 
 - Documentation metadata references the packaged `README.md`; the project URL points to the GitHub repository.
 - Release notes metadata links to [RELEASE-NOTES.md for the `1.0.1` Git tag](https://raw.githubusercontent.com/Synchronos/KlipAround/refs/tags/1.0.1/RELEASE-NOTES.md).
+- Package metadata uses the SPDX `MIT` license expression and records the Git repository, release tag, and source commit. The deprecated license URL and owners fields are omitted from the nuspec.
 - Included these release notes in the package. Clipboard transfer behavior is unchanged from `1.0.0`.
 
 ## 1.0.0
