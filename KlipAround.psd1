@@ -26,7 +26,7 @@
         PSData = @{
             Tags       = @('Clipboard', 'Transfer', 'PowerShell', 'HDLC', 'KlipAround', 'PSEdition_Desktop', 'PSEdition_Core', 'Windows', 'Linux')
             LicenseUri = 'https://github.com/Synchronos/KlipAround/blob/main/LICENSE'
-            ProjectUri = 'https://raw.githubusercontent.com/Synchronos/KlipAround/refs/tags/1.0.1/README.md'
+            ProjectUri = 'https://github.com/Synchronos/KlipAround'
             ReleaseNotes = 'https://raw.githubusercontent.com/Synchronos/KlipAround/refs/tags/1.0.1/RELEASE-NOTES.md'
         }
     }

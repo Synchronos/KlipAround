@@ -32,8 +32,37 @@ try {
     [void](New-Item -ItemType Directory -Path $helpDestination)
     Copy-Item -LiteralPath (Join-Path (Join-Path $moduleRoot 'en-US') 'about_KlipAround.help.txt') -Destination $helpDestination
 
+    $package = Compress-PSResource -Path $stagingModule -DestinationPath $stagingRoot -PassThru -ErrorAction Stop
+    $archive = [IO.Compression.ZipFile]::Open($package.FullName, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $entry = $archive.GetEntry('KlipAround.nuspec')
+        $document = [xml]::new()
+        $stream = $entry.Open()
+        try {
+            $document.Load($stream)
+        }
+        finally {
+            $stream.Dispose()
+        }
+        # Compress-PSResource does not expose NuGet's readme metadata.
+        $readme = $document.CreateElement('readme', $document.DocumentElement.NamespaceURI)
+        $readme.InnerText = 'README.md'
+        [void]$document.package.metadata.AppendChild($readme)
+        $entry.Delete()
+        $stream = $archive.CreateEntry('KlipAround.nuspec').Open()
+        try {
+            $document.Save($stream)
+        }
+        finally {
+            $stream.Dispose()
+        }
+    }
+    finally {
+        $archive.Dispose()
+    }
     [void](New-Item -ItemType Directory -Path $outputDirectoryPath -Force)
-    Compress-PSResource -Path $stagingModule -DestinationPath $outputDirectoryPath -PassThru -ErrorAction Stop
+    Move-Item -LiteralPath $package.FullName -Destination $packagePath -ErrorAction Stop
+    Get-Item -LiteralPath $packagePath
 }
 finally {
     if (Test-Path -LiteralPath $stagingRoot) {

@@ -2,7 +2,7 @@
 
 ## 1.0.1
 
-- Documentation metadata links to [README.md for the `1.0.1` Git tag](https://raw.githubusercontent.com/Synchronos/KlipAround/refs/tags/1.0.1/README.md).
+- Documentation metadata references the packaged `README.md`; the project URL points to the GitHub repository.
 - Release notes metadata links to [RELEASE-NOTES.md for the `1.0.1` Git tag](https://raw.githubusercontent.com/Synchronos/KlipAround/refs/tags/1.0.1/RELEASE-NOTES.md).
 - Included these release notes in the package. Clipboard transfer behavior is unchanged from `1.0.0`.
 

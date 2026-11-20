@@ -37,7 +37,8 @@ Describe 'KlipAround release package' {
             finally {
                 $reader.Dispose()
             }
-            $nuspec.package.metadata.projectUrl | Should -Be 'https://raw.githubusercontent.com/Synchronos/KlipAround/refs/tags/1.0.1/README.md'
+            $nuspec.package.metadata.projectUrl | Should -Be 'https://github.com/Synchronos/KlipAround'
+            $nuspec.package.metadata.readme | Should -Be 'README.md'
             $nuspec.package.metadata.releaseNotes | Should -Be 'https://raw.githubusercontent.com/Synchronos/KlipAround/refs/tags/1.0.1/RELEASE-NOTES.md'
         }
         finally {
