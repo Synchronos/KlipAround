@@ -29,6 +29,15 @@ Describe 'KlipAround release package' {
                 $actual | Should -Be (Get-FileHash -LiteralPath (Join-Path $script:projectRoot $name) -Algorithm SHA256).Hash
             }
             @($archive.Entries | Where-Object FullName -Match '^smoke/').Count | Should -Be 0
+
+            $reader = [IO.StreamReader]::new($archive.GetEntry('KlipAround.nuspec').Open())
+            try {
+                [xml]$nuspec = $reader.ReadToEnd()
+            }
+            finally {
+                $reader.Dispose()
+            }
+            $nuspec.package.metadata.releaseNotes | Should -Match 'https://raw\.githubusercontent\.com/Synchronos/KlipAround/refs/tags/1\.0/README\.md$'
         }
         finally {
             $archive.Dispose()
