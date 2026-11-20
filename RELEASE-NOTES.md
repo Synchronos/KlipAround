@@ -1,5 +1,11 @@
 # KlipAround release notes
 
+## 1.0.2
+
+- Receiver FIN-grace waits now use polling-only mode to reduce listener fallback noise while preserving protocol behavior.
+- Added debug ignore-reason diagnostics for self-published, duplicate, and mismatch messages in protocol waits.
+- Improved wait-loop timing reliability by using monotonic stopwatch timeouts (immune to wall-clock jumps) and UTC timestamp generation.
+
 ## 1.0.1
 
 - Documentation metadata references the packaged `README.md`; the project URL points to the GitHub repository.

@@ -52,16 +52,19 @@ Describe 'KlipAround envelope and block helpers' {
             $script:dedupIndex = 0
             Mock New-KlipAroundClipboardListener { $null }
             Mock Start-Sleep { }
+            Mock Write-Debug { }
             Mock Get-KlipAroundClipboardText {
                 $message = $script:dedupMessages[$script:dedupIndex]
                 $script:dedupIndex++
                 return ConvertTo-KlipAroundEnvelope -Message $message
             }
 
-            $received = Wait-KlipAroundMessage -SessionId 'dedup' -ExpectedRole Sender -ExpectedMessageType HELLO -TimeoutSeconds 1 -IgnoreMessageIds $ignored -SeenMessageIds $seen
+            $received = Wait-KlipAroundMessage -SessionId 'dedup' -ExpectedRole Sender -ExpectedMessageType HELLO -TimeoutSeconds 1 -IgnoreMessageIds $ignored -SeenMessageIds $seen -Debug
             $received.MessageId | Should -Be $newMessage.MessageId
             $seen.Contains($newMessage.MessageId) | Should -BeTrue
             $ignored.Count | Should -Be 1
+            Should -Invoke Write-Debug -Times 1 -Exactly -ParameterFilter { $Message -like '*probably self-published*' }
+            Should -Invoke Write-Debug -Times 1 -Exactly -ParameterFilter { $Message -like '*duplicate message already processed*' }
         }
 
         It 'round-trips data block with checksum verification' {
@@ -518,6 +521,16 @@ Describe 'Linux clipboard errors' {
                 Should -Throw '*Clipboard unavailable*'
         }
 
+        It 'skips listener initialization when disabled for low-noise waits' {
+            Mock New-KlipAroundClipboardListener { throw 'listener should not be called' }
+            Mock Start-Sleep { }
+            Mock Get-KlipAroundClipboardText { throw 'Clipboard is empty.' }
+
+            { Wait-KlipAroundMessage -SessionId 'test' -ExpectedRole Sender -ExpectedMessageType HELLO -TimeoutSeconds 1 -DisableClipboardListener } |
+                Should -Throw '*Timed out waiting for message types*'
+            Should -Invoke New-KlipAroundClipboardListener -Times 0 -Exactly
+        }
+
         It 'reports listener disposal failures while preserving the received message' {
             $script:disposalTestListener = [pscustomobject]@{}
             $script:disposalTestListener | Add-Member -MemberType ScriptMethod -Name Dispose -Value { throw 'Simulated disposal failure' }
@@ -550,17 +563,11 @@ Describe 'Linux clipboard errors' {
         }
 
         It 'allows a polling interval for a clipboard read near the message deadline' {
-            $script:clockStart = Get-Date
-            $script:clockReads = 0
-            Mock Get-Date {
-                $script:clockReads++
-                if ($script:clockReads -eq 1) { return $script:clockStart }
-                if ($script:clockReads -le 3) { return $script:clockStart.AddMilliseconds(999) }
-                return $script:clockStart.AddSeconds(2)
-            }
+            $script:timeoutBudgets = @()
             Mock New-KlipAroundClipboardListener { $null }
             Mock Start-Sleep { }
             Mock Get-KlipAroundClipboardText {
+                $script:timeoutBudgets += $TimeoutMilliseconds
                 if ($TimeoutMilliseconds -lt 250) {
                     throw [System.InvalidOperationException]::new('Clipboard read budget is too short')
                 }
@@ -569,7 +576,8 @@ Describe 'Linux clipboard errors' {
 
             { Wait-KlipAroundMessage -SessionId 'test' -ExpectedRole Sender -ExpectedMessageType HELLO -TimeoutSeconds 1 } |
                 Should -Throw '*Timed out waiting for message types*'
-            Should -Invoke Get-KlipAroundClipboardText -Times 1 -Exactly -ParameterFilter { $TimeoutMilliseconds -ge 250 }
+            $script:timeoutBudgets.Count | Should -BeGreaterThan 0
+            ($script:timeoutBudgets | Measure-Object -Minimum).Minimum | Should -BeGreaterOrEqual 250
         }
 
         It 'surfaces clipboard failures when receiving an initial HELLO' {

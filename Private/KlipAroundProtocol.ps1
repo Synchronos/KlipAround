@@ -31,7 +31,7 @@ function New-KlipAroundMessage {
         Role         = $Role
         MessageType  = $MessageType
         MessageId    = [guid]::NewGuid().ToString()
-        TimestampUtc = (Get-Date).ToUniversalTime().ToString('o')
+        TimestampUtc = [DateTime]::UtcNow.ToString('o')
         Payload      = $Payload
     }
 }
@@ -58,7 +58,7 @@ function ConvertFrom-KlipAroundEnvelope {
         [string]$Text
     )
 
-    $normalized = $Text -replace "`r`n", "`n"
+    $normalized = $Text.Replace("`r`n", "`n")
     $beginIndex = $normalized.IndexOf($script:KlipAroundMarkers.Begin, [StringComparison]::Ordinal)
     if ($beginIndex -lt 0) {
         throw 'Clipboard payload is not a KlipAround envelope.'
@@ -151,12 +151,19 @@ function Wait-KlipAroundMessage {
         [System.Collections.Generic.HashSet[string]]$IgnoreMessageIds,
 
         [Parameter()]
-        [System.Collections.Generic.HashSet[string]]$SeenMessageIds
+        [System.Collections.Generic.HashSet[string]]$SeenMessageIds,
+
+        [Parameter()]
+        [switch]$DisableClipboardListener
     )
 
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $timeoutMilliseconds = [double]$TimeoutSeconds * 1000
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $emitDebug = ($DebugPreference -ne [System.Management.Automation.ActionPreference]::SilentlyContinue)
     $maxPollMilliseconds = [Math]::Max($PollMilliseconds, $MinPollMilliseconds)
     $currentPollMilliseconds = $MinPollMilliseconds
+    $expectedMessageTypeSet = [System.Collections.Generic.HashSet[string]]::new($ExpectedMessageType, [StringComparer]::Ordinal)
+    $expectedMessageTypesText = $ExpectedMessageType -join ','
     $lastClipboardText = $null
     $haveLastClipboardText = $false
     $clipboardListener = $null
@@ -165,46 +172,21 @@ function Wait-KlipAroundMessage {
     $maxListenerTimeoutStreak = 8
     $readClipboardImmediately = $true
 
-    $sleepWithJitter = {
-        param([int]$BaseMilliseconds)
-        $jitter = Get-Random -Minimum -10 -Maximum 11
-        $sleepFor = $BaseMilliseconds + $jitter
-        if ($sleepFor -lt 10) { $sleepFor = 10 }
-        if ($sleepFor -gt $maxPollMilliseconds) { $sleepFor = $maxPollMilliseconds }
-        Start-Sleep -Milliseconds $sleepFor
-    }
-
-    $increasePoll = {
-        param([double]$Factor)
-        $next = [int][Math]::Ceiling($currentPollMilliseconds * $Factor)
-        if ($next -lt $MinPollMilliseconds) { $next = $MinPollMilliseconds }
-        if ($next -gt $maxPollMilliseconds) { $next = $maxPollMilliseconds }
-        return $next
+    if (-not $DisableClipboardListener) {
+        try {
+            $clipboardListener = New-KlipAroundClipboardListener
+            if ($null -ne $clipboardListener) {
+                $useClipboardListener = $true
+                Write-Verbose "Using clipboard event listener for session '$SessionId'."
+            }
+        }
+        catch {
+            $useClipboardListener = $false
+        }
     }
 
     try {
-        $clipboardListener = New-KlipAroundClipboardListener
-        if ($null -ne $clipboardListener) {
-            $useClipboardListener = $true
-            Write-Verbose "Using clipboard event listener for session '$SessionId'."
-        }
-    }
-    catch {
-        $useClipboardListener = $false
-    }
-
-    $invokeWaitBackoff = {
-        param([double]$Factor)
-        if ($useClipboardListener) {
-            return
-        }
-
-        & $sleepWithJitter $currentPollMilliseconds
-        $currentPollMilliseconds = [int](& $increasePoll $Factor)
-    }
-
-    try {
-        while ((Get-Date) -lt $deadline) {
+        while ($stopwatch.Elapsed.TotalMilliseconds -lt $timeoutMilliseconds) {
             if ($useClipboardListener -and -not $readClipboardImmediately) {
                 $waitMilliseconds = [Math]::Max(20, [Math]::Min($currentPollMilliseconds, $maxPollMilliseconds))
                 $clipboardChanged = $false
@@ -238,19 +220,42 @@ function Wait-KlipAroundMessage {
             try {
                 # Give a read started near the deadline one polling interval to finish.
                 $minimumReadMilliseconds = [Math]::Min($maxPollMilliseconds, $TimeoutSeconds * 1000)
-                $remainingMilliseconds = [int][Math]::Max($minimumReadMilliseconds, [Math]::Ceiling(($deadline - (Get-Date)).TotalMilliseconds))
+                $remainingTimeoutMilliseconds = [Math]::Ceiling($timeoutMilliseconds - $stopwatch.Elapsed.TotalMilliseconds)
+                $remainingMilliseconds = [int][Math]::Max($minimumReadMilliseconds, $remainingTimeoutMilliseconds)
                 $text = Get-KlipAroundClipboardText -TimeoutMilliseconds $remainingMilliseconds
             }
             catch [System.InvalidOperationException] {
                 throw
             }
             catch {
-                & $invokeWaitBackoff 1.35
+                if (-not $useClipboardListener) {
+                    $jitter = Get-Random -Minimum -10 -Maximum 11
+                    $sleepFor = $currentPollMilliseconds + $jitter
+                    if ($sleepFor -lt 10) { $sleepFor = 10 }
+                    if ($sleepFor -gt $maxPollMilliseconds) { $sleepFor = $maxPollMilliseconds }
+                    Start-Sleep -Milliseconds $sleepFor
+
+                    $nextPollMilliseconds = [int][Math]::Ceiling($currentPollMilliseconds * 1.35)
+                    if ($nextPollMilliseconds -lt $MinPollMilliseconds) { $nextPollMilliseconds = $MinPollMilliseconds }
+                    if ($nextPollMilliseconds -gt $maxPollMilliseconds) { $nextPollMilliseconds = $maxPollMilliseconds }
+                    $currentPollMilliseconds = $nextPollMilliseconds
+                }
                 continue
             }
 
             if ($haveLastClipboardText -and $text -ceq $lastClipboardText) {
-                & $invokeWaitBackoff 1.35
+                if (-not $useClipboardListener) {
+                    $jitter = Get-Random -Minimum -10 -Maximum 11
+                    $sleepFor = $currentPollMilliseconds + $jitter
+                    if ($sleepFor -lt 10) { $sleepFor = 10 }
+                    if ($sleepFor -gt $maxPollMilliseconds) { $sleepFor = $maxPollMilliseconds }
+                    Start-Sleep -Milliseconds $sleepFor
+
+                    $nextPollMilliseconds = [int][Math]::Ceiling($currentPollMilliseconds * 1.35)
+                    if ($nextPollMilliseconds -lt $MinPollMilliseconds) { $nextPollMilliseconds = $MinPollMilliseconds }
+                    if ($nextPollMilliseconds -gt $maxPollMilliseconds) { $nextPollMilliseconds = $maxPollMilliseconds }
+                    $currentPollMilliseconds = $nextPollMilliseconds
+                }
                 continue
             }
 
@@ -263,30 +268,111 @@ function Wait-KlipAroundMessage {
                 Write-KlipAroundDebugEnvelope -Direction Receive -Text $text
             }
             catch {
-                & $invokeWaitBackoff 1.25
+                if (-not $useClipboardListener) {
+                    $jitter = Get-Random -Minimum -10 -Maximum 11
+                    $sleepFor = $currentPollMilliseconds + $jitter
+                    if ($sleepFor -lt 10) { $sleepFor = 10 }
+                    if ($sleepFor -gt $maxPollMilliseconds) { $sleepFor = $maxPollMilliseconds }
+                    Start-Sleep -Milliseconds $sleepFor
+
+                    $nextPollMilliseconds = [int][Math]::Ceiling($currentPollMilliseconds * 1.25)
+                    if ($nextPollMilliseconds -lt $MinPollMilliseconds) { $nextPollMilliseconds = $MinPollMilliseconds }
+                    if ($nextPollMilliseconds -gt $maxPollMilliseconds) { $nextPollMilliseconds = $maxPollMilliseconds }
+                    $currentPollMilliseconds = $nextPollMilliseconds
+                }
                 continue
             }
 
             $messageId = [string]$msg.MessageId
 
             if ($null -ne $IgnoreMessageIds -and $IgnoreMessageIds.Contains($messageId)) {
-                & $invokeWaitBackoff 1.2
+                if ($emitDebug) {
+                    Write-Debug ("[Receive] Ignoring message id '{0}': message is probably self-published." -f $messageId)
+                }
+                if (-not $useClipboardListener) {
+                    $jitter = Get-Random -Minimum -10 -Maximum 11
+                    $sleepFor = $currentPollMilliseconds + $jitter
+                    if ($sleepFor -lt 10) { $sleepFor = 10 }
+                    if ($sleepFor -gt $maxPollMilliseconds) { $sleepFor = $maxPollMilliseconds }
+                    Start-Sleep -Milliseconds $sleepFor
+
+                    $nextPollMilliseconds = [int][Math]::Ceiling($currentPollMilliseconds * 1.2)
+                    if ($nextPollMilliseconds -lt $MinPollMilliseconds) { $nextPollMilliseconds = $MinPollMilliseconds }
+                    if ($nextPollMilliseconds -gt $maxPollMilliseconds) { $nextPollMilliseconds = $maxPollMilliseconds }
+                    $currentPollMilliseconds = $nextPollMilliseconds
+                }
                 continue
             }
             if ($null -ne $SeenMessageIds -and $SeenMessageIds.Contains($messageId)) {
-                & $invokeWaitBackoff 1.2
+                if ($emitDebug) {
+                    Write-Debug ("[Receive] Ignoring message id '{0}': duplicate message already processed." -f $messageId)
+                }
+                if (-not $useClipboardListener) {
+                    $jitter = Get-Random -Minimum -10 -Maximum 11
+                    $sleepFor = $currentPollMilliseconds + $jitter
+                    if ($sleepFor -lt 10) { $sleepFor = 10 }
+                    if ($sleepFor -gt $maxPollMilliseconds) { $sleepFor = $maxPollMilliseconds }
+                    Start-Sleep -Milliseconds $sleepFor
+
+                    $nextPollMilliseconds = [int][Math]::Ceiling($currentPollMilliseconds * 1.2)
+                    if ($nextPollMilliseconds -lt $MinPollMilliseconds) { $nextPollMilliseconds = $MinPollMilliseconds }
+                    if ($nextPollMilliseconds -gt $maxPollMilliseconds) { $nextPollMilliseconds = $maxPollMilliseconds }
+                    $currentPollMilliseconds = $nextPollMilliseconds
+                }
                 continue
             }
             if ($msg.SessionId -ne $SessionId) {
-                & $invokeWaitBackoff 1.2
+                if ($emitDebug) {
+                    Write-Debug ("[Receive] Ignoring message id '{0}': session mismatch. Expected '{1}', got '{2}'." -f $messageId, $SessionId, [string]$msg.SessionId)
+                }
+                if (-not $useClipboardListener) {
+                    $jitter = Get-Random -Minimum -10 -Maximum 11
+                    $sleepFor = $currentPollMilliseconds + $jitter
+                    if ($sleepFor -lt 10) { $sleepFor = 10 }
+                    if ($sleepFor -gt $maxPollMilliseconds) { $sleepFor = $maxPollMilliseconds }
+                    Start-Sleep -Milliseconds $sleepFor
+
+                    $nextPollMilliseconds = [int][Math]::Ceiling($currentPollMilliseconds * 1.2)
+                    if ($nextPollMilliseconds -lt $MinPollMilliseconds) { $nextPollMilliseconds = $MinPollMilliseconds }
+                    if ($nextPollMilliseconds -gt $maxPollMilliseconds) { $nextPollMilliseconds = $maxPollMilliseconds }
+                    $currentPollMilliseconds = $nextPollMilliseconds
+                }
                 continue
             }
             if ($msg.Role -ne $ExpectedRole) {
-                & $invokeWaitBackoff 1.2
+                if ($emitDebug) {
+                    Write-Debug ("[Receive] Ignoring message id '{0}': role mismatch. Expected '{1}', got '{2}'." -f $messageId, $ExpectedRole, [string]$msg.Role)
+                }
+                if (-not $useClipboardListener) {
+                    $jitter = Get-Random -Minimum -10 -Maximum 11
+                    $sleepFor = $currentPollMilliseconds + $jitter
+                    if ($sleepFor -lt 10) { $sleepFor = 10 }
+                    if ($sleepFor -gt $maxPollMilliseconds) { $sleepFor = $maxPollMilliseconds }
+                    Start-Sleep -Milliseconds $sleepFor
+
+                    $nextPollMilliseconds = [int][Math]::Ceiling($currentPollMilliseconds * 1.2)
+                    if ($nextPollMilliseconds -lt $MinPollMilliseconds) { $nextPollMilliseconds = $MinPollMilliseconds }
+                    if ($nextPollMilliseconds -gt $maxPollMilliseconds) { $nextPollMilliseconds = $maxPollMilliseconds }
+                    $currentPollMilliseconds = $nextPollMilliseconds
+                }
                 continue
             }
-            if ($ExpectedMessageType -notcontains [string]$msg.MessageType) {
-                & $invokeWaitBackoff 1.2
+            if (-not $expectedMessageTypeSet.Contains([string]$msg.MessageType)) {
+                if ($emitDebug) {
+                    Write-Debug ("[Receive] Ignoring message id '{0}': message type mismatch. Expected '{1}', got '{2}'." -f $messageId, $expectedMessageTypesText, [string]$msg.MessageType)
+                }
+                if (-not $useClipboardListener) {
+                    $jitter = Get-Random -Minimum -10 -Maximum 11
+                    $sleepFor = $currentPollMilliseconds + $jitter
+                    if ($sleepFor -lt 10) { $sleepFor = 10 }
+                    if ($sleepFor -gt $maxPollMilliseconds) { $sleepFor = $maxPollMilliseconds }
+                    Start-Sleep -Milliseconds $sleepFor
+
+                    $nextPollMilliseconds = [int][Math]::Ceiling($currentPollMilliseconds * 1.2)
+                    if ($nextPollMilliseconds -lt $MinPollMilliseconds) { $nextPollMilliseconds = $MinPollMilliseconds }
+                    if ($nextPollMilliseconds -gt $maxPollMilliseconds) { $nextPollMilliseconds = $maxPollMilliseconds }
+                    $currentPollMilliseconds = $nextPollMilliseconds
+                }
                 continue
             }
 

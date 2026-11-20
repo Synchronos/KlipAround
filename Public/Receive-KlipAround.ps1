@@ -141,10 +141,11 @@ function Receive-KlipAround {
                 $published = Publish-KlipAroundMessage -Message $finAck -TimeoutSeconds $TimeoutSeconds
                 [void]$sentIds.Add($published.MessageId)
 
+                Write-Verbose "FIN grace idle wait (polling)."
                 $graceDeadline = (Get-Date).AddSeconds($finAckGraceSeconds)
                 while ((Get-Date) -lt $graceDeadline) {
                     try {
-                        $followUp = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType @('FIN', 'HELLO') -TimeoutSeconds 2 -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds
+                        $followUp = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType @('FIN', 'HELLO') -TimeoutSeconds 2 -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds -DisableClipboardListener
                     }
                     catch {
                         $isWaitTimeout = $_.Exception.Message -like "Timed out waiting for message types*"

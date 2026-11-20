@@ -26,6 +26,7 @@ established by the available evidence.
 | [0010](0010-require-consent-for-clipboard-probes.md) | Require consent for clipboard probes |
 | [0011](0011-validate-supported-platforms-in-ci.md) | Validate supported platforms in CI |
 | [0012](0012-publish-versioned-documentation-and-provenance.md) | Publish versioned documentation and provenance metadata |
+| [0013](0013-include-tests-in-gallery-packages-for-validation.md) | Include tests in Gallery packages for release validation |
 
 Use [adr-template.md](adr-template.md) for new records. See
 [MADR](https://adr.github.io/madr/) and

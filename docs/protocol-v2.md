@@ -160,7 +160,7 @@ deadline. Let `T` be a command's `TimeoutSeconds`, and `R` the sender's
 | Repeated acknowledgment without progress | Sender tracks the signature of cumulative progress plus missing sequences and fails when the repeated-signature counter exceeds `R`. |
 | Receiver data and EOF waits | Uses `min(3600, T + 1)` seconds per wait; other main waits use `T`. |
 | `FIN` acknowledgment | Sender retries at intervals of at most `min(2, T)` seconds, bounded by both its elapsed `T` budget and `R + 1` publications. |
-| Completion grace | Sender advertises `min(T, (R + 1) * min(2, T)) + 2` seconds. Receiver accepts an advertised integer from 3 through 3600, otherwise throws. If omitted, it uses `min(3600, T + 2)`. Follow-up waits are two seconds each and may extend past the grace boundary. |
+| Completion grace | Sender advertises `min(T, (R + 1) * min(2, T)) + 2` seconds. Receiver accepts an advertised integer from 3 through 3600, otherwise throws. If omitted, it uses `min(3600, T + 2)`. Follow-up waits are two seconds each and may extend past the grace boundary. During these FIN-grace follow-up waits, the receiver uses polling-only message waits to avoid listener no-signal fallback noise. |
 
 Clipboard operations and scheduling add time. Linux subprocess operations are
 bounded; a read started near a message deadline can finish up to one polling

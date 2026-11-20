@@ -78,9 +78,6 @@ Each clipboard payload is a text envelope:
 - JSON content containing Base64-encoded data blocks
 - `-----END KLIPAROUND/2-----`
 
-Protocol version 2 is not compatible with version 1. Upgrade both endpoints before
-transferring files.
-
 Data integrity:
 
 - SHA-256 per data block by default (or CRC32C when selected)
