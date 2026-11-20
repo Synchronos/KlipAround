@@ -1,0 +1,14 @@
+# KlipAround release notes
+
+## 1.0.1
+
+- Documentation metadata links to [README.md for the `1.0.1` Git tag](https://raw.githubusercontent.com/Synchronos/KlipAround/refs/tags/1.0.1/README.md).
+- Release notes metadata links to [RELEASE-NOTES.md for the `1.0.1` Git tag](https://raw.githubusercontent.com/Synchronos/KlipAround/refs/tags/1.0.1/RELEASE-NOTES.md).
+- Included these release notes in the package. Clipboard transfer behavior is unchanged from `1.0.0`.
+
+## 1.0.0
+
+- Initial PowerShell Gallery release. Send and receive files over a shared clipboard, including through Remote Desktop clipboard redirection. Transfers use bounded retries, per-block checksums, and SHA-256 verification before accepting a file.
+- Supports Windows PowerShell 5.1 and PowerShell 7 on Windows. On Linux, PowerShell 7 requires `xclip` and an accessible X11 or XWayland display.
+- Includes an offline bootstrap generator that lets you install the module without Internet or file-share access.
+- The transport probe requires `-NoRestoreClipboard` because it replaces the clipboard contents without restoring them.

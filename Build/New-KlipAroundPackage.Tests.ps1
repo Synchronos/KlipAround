@@ -10,7 +10,7 @@ Describe 'KlipAround release package' {
         $package | Should -Not -BeNullOrEmpty
         $archive = [IO.Compression.ZipFile]::OpenRead($package.FullName)
         try {
-            $required = @('KlipAround.psd1', 'KlipAround.psm1', 'README.md', 'LICENSE', 'en-US/about_KlipAround.help.txt')
+            $required = @('KlipAround.psd1', 'KlipAround.psm1', 'README.md', 'RELEASE-NOTES.md', 'LICENSE', 'en-US/about_KlipAround.help.txt')
             foreach ($directory in @('Private', 'Public', 'Tests')) {
                 $required += @(Get-ChildItem -LiteralPath (Join-Path $script:projectRoot $directory) -Filter '*.ps1' -File | ForEach-Object {
                     "$directory/$($_.Name)"
@@ -37,7 +37,8 @@ Describe 'KlipAround release package' {
             finally {
                 $reader.Dispose()
             }
-            $nuspec.package.metadata.releaseNotes | Should -Match 'https://raw\.githubusercontent\.com/Synchronos/KlipAround/refs/tags/1\.0/README\.md$'
+            $nuspec.package.metadata.projectUrl | Should -Be 'https://raw.githubusercontent.com/Synchronos/KlipAround/refs/tags/1.0.1/README.md'
+            $nuspec.package.metadata.releaseNotes | Should -Be 'https://raw.githubusercontent.com/Synchronos/KlipAround/refs/tags/1.0.1/RELEASE-NOTES.md'
         }
         finally {
             $archive.Dispose()

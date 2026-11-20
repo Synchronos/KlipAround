@@ -6,6 +6,8 @@ It is designed for half-duplex clipboard links (including Remote Desktop clipboa
 
 Transfers support empty files and files whose final block contains a single byte.
 
+See the [release notes](RELEASE-NOTES.md) for changes by version.
+
 ## Design goals
 
 KlipAround is intentionally optimized for clipboard-driven transfer rather than serial/modem interoperability. The protocol goals are:

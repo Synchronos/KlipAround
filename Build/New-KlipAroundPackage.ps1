@@ -17,7 +17,7 @@ $stagingRoot = Join-Path ([IO.Path]::GetTempPath()) ('kliparound-package-' + [gu
 $stagingModule = Join-Path $stagingRoot 'KlipAround'
 try {
     [void](New-Item -ItemType Directory -Path $stagingModule)
-    foreach ($file in @('KlipAround.psd1', 'KlipAround.psm1', 'README.md', 'LICENSE')) {
+    foreach ($file in @('KlipAround.psd1', 'KlipAround.psm1', 'README.md', 'RELEASE-NOTES.md', 'LICENSE')) {
         Copy-Item -LiteralPath (Join-Path $moduleRoot $file) -Destination $stagingModule
     }
     foreach ($directory in @('Private', 'Public', 'Tests')) {
