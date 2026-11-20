@@ -27,7 +27,7 @@
             Tags       = @('Clipboard', 'Transfer', 'PowerShell', 'HDLC', 'KlipAround', 'PSEdition_Desktop', 'PSEdition_Core', 'Windows', 'Linux')
             LicenseUri = 'https://github.com/Synchronos/KlipAround/blob/main/LICENSE'
             ProjectUri = 'https://github.com/Synchronos/KlipAround'
-            ReleaseNotes = 'https://raw.githubusercontent.com/Synchronos/KlipAround/refs/tags/1.0.2/RELEASE-NOTES.md'
+            ReleaseNotes = 'https://github.com/Synchronos/KlipAround/blob/1.0.2/RELEASE-NOTES.md'
         }
     }
 }
