@@ -8,6 +8,23 @@ Transfers support empty files and files whose final block contains a single byte
 
 See the [release notes](RELEASE-NOTES.md) for changes by version.
 
+## Documentation
+
+| Document | Purpose |
+| --- | --- |
+| [Troubleshooting](docs/troubleshooting.md) | Diagnose clipboard, terminal, transfer, and installation failures. |
+| [Compatibility and validation](docs/compatibility.md) | Supported environments, dated release evidence, and unverified transport scenarios. |
+| [Protocol v2 reference](docs/protocol-v2.md) | Envelope fields, state transitions, acknowledgments, retries, and limitations. |
+| [arc42 architecture and C4 views](docs/architecture.md) | System context, containers, components, deployment, quality scenarios, and risks. |
+| [Architectural decisions](docs/decisions/README.md) | Decisions and their rationale in MADR format. |
+| [Contributing](CONTRIBUTING.md) | Development setup, existing checks, and change expectations. |
+| [Release checklist](docs/releasing.md) | Validate, publish, and independently verify an exact release package. |
+
+These guides are maintained in the
+[source repository](https://github.com/Synchronos/KlipAround). The Gallery
+package includes this README, release notes, and command/about help, but not
+the repository's `docs` directory or contributor guide.
+
 ## Design goals
 
 KlipAround is intentionally optimized for clipboard-driven transfer rather than serial/modem interoperability. The protocol goals are:
