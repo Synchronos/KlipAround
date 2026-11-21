@@ -5,7 +5,7 @@
     Author            = 'James Coe'
     CompanyName       = 'Community'
     Copyright         = '(c) James Coe. All rights reserved.'
-    Description       = 'HDLC-inspired reliable clipboard file transfer protocol for PowerShell.'
+    Description       = 'KlipAround is a PowerShell module that implements a reliable, HDLC-inspired file transfer protocol over the clipboard.'
     PowerShellVersion = '5.1'
 
     FunctionsToExport = @(

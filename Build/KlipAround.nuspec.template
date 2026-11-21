@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2011/08/nuspec.xsd">
+  <metadata>
+    <id>__ID__</id>
+    <version>__VERSION__</version>
+    <authors>__AUTHORS__</authors>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectUrl>__PROJECT_URL__</projectUrl>
+    <description>__DESCRIPTION__</description>
+    <releaseNotes>__RELEASE_NOTES__</releaseNotes>
+    <copyright>__COPYRIGHT__</copyright>
+    <tags>__TAGS__</tags>
+    <license type="expression">MIT</license>
+    <repository type="git" url="__REPOSITORY_URL__" branch="__REPOSITORY_BRANCH__" commit="__REPOSITORY_COMMIT__" />
+    <readme>__README__</readme>
+  </metadata>
+</package>

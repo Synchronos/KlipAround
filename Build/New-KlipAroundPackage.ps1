@@ -7,15 +7,57 @@ $ErrorActionPreference = 'Stop'
 $moduleRoot = Split-Path $PSScriptRoot -Parent
 $manifestPath = Join-Path $moduleRoot 'KlipAround.psd1'
 $manifest = Test-ModuleManifest -Path $manifestPath -ErrorAction Stop
+$nuspecTemplatePath = Join-Path $PSScriptRoot 'KlipAround.nuspec.template'
 $outputDirectoryPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
 $packagePath = Join-Path $outputDirectoryPath ("KlipAround.{0}.nupkg" -f $manifest.Version)
 if (Test-Path -LiteralPath $packagePath) {
     throw "Package '$packagePath' already exists. Choose another output directory or remove the existing package."
 }
+if (-not (Test-Path -LiteralPath $nuspecTemplatePath -PathType Leaf)) {
+    throw "Nuspec template '$nuspecTemplatePath' was not found."
+}
 
 $sourceCommit = & git -C $moduleRoot rev-parse HEAD
 if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[0-9a-f]{40}$') {
     throw 'Could not determine the Git commit for the package repository metadata.'
+}
+
+$escapeXml = {
+    param([AllowNull()][string]$Value)
+    if ($null -eq $Value) {
+        return ''
+    }
+    return [System.Security.SecurityElement]::Escape($Value)
+}
+
+$nuspecTokenMap = @{
+    '__ID__'                = (& $escapeXml ([string]$manifest.Name))
+    '__VERSION__'           = (& $escapeXml ([string]$manifest.Version))
+    '__AUTHORS__'           = (& $escapeXml ([string]$manifest.Author))
+    '__PROJECT_URL__'       = (& $escapeXml ([string]$manifest.ProjectUri))
+    '__DESCRIPTION__'       = (& $escapeXml ([string]$manifest.Description))
+    '__RELEASE_NOTES__'     = (& $escapeXml ([string]$manifest.ReleaseNotes))
+    '__COPYRIGHT__'         = (& $escapeXml ([string]$manifest.Copyright))
+    '__TAGS__'              = (& $escapeXml ((@($manifest.Tags) | ForEach-Object { [string]$_ }) -join ' '))
+    '__REPOSITORY_URL__'    = 'https://github.com/Synchronos/KlipAround.git'
+    '__REPOSITORY_BRANCH__' = (& $escapeXml ("refs/tags/$($manifest.Version)"))
+    '__REPOSITORY_COMMIT__' = (& $escapeXml $sourceCommit)
+    '__README__'            = 'README.md'
+}
+$nuspecTemplate = Get-Content -LiteralPath $nuspecTemplatePath -Raw -ErrorAction Stop
+$nuspecText = $nuspecTemplate
+foreach ($token in $nuspecTokenMap.Keys) {
+    $nuspecText = $nuspecText.Replace($token, $nuspecTokenMap[$token])
+}
+$unresolvedTokens = [regex]::Matches($nuspecText, '__[A-Z0-9_]+__')
+if ($unresolvedTokens.Count -gt 0) {
+    throw ("Unresolved nuspec template token(s): {0}" -f (($unresolvedTokens | ForEach-Object { $_.Value } | Select-Object -Unique) -join ', '))
+}
+try {
+    [xml]$null = $nuspecText
+}
+catch {
+    throw "Rendered nuspec template is not valid XML: $($_.Exception.Message)"
 }
 
 $stagingRoot = Join-Path ([IO.Path]::GetTempPath()) ('kliparound-package-' + [guid]::NewGuid().ToString('N'))
@@ -41,39 +83,19 @@ try {
     $archive = [IO.Compression.ZipFile]::Open($package.FullName, [IO.Compression.ZipArchiveMode]::Update)
     try {
         $entry = $archive.GetEntry('KlipAround.nuspec')
-        $document = [xml]::new()
-        $stream = $entry.Open()
-        try {
-            $document.Load($stream)
+        if ($null -eq $entry) {
+            throw "Package '$($package.FullName)' is missing 'KlipAround.nuspec'."
         }
-        finally {
-            $stream.Dispose()
-        }
-        # Compress-PSResource does not expose these modern NuGet metadata fields.
-        $metadata = $document.package.metadata
-        foreach ($name in @('owners', 'licenseUrl')) {
-            $node = $metadata.SelectSingleNode("*[local-name()='$name']")
-            if ($null -ne $node) {
-                [void]$metadata.RemoveChild($node)
-            }
-        }
-        $license = $document.CreateElement('license', $document.DocumentElement.NamespaceURI)
-        $license.SetAttribute('type', 'expression')
-        $license.InnerText = 'MIT'
-        [void]$metadata.AppendChild($license)
-        $repository = $document.CreateElement('repository', $document.DocumentElement.NamespaceURI)
-        $repository.SetAttribute('type', 'git')
-        $repository.SetAttribute('url', 'https://github.com/Synchronos/KlipAround.git')
-        $repository.SetAttribute('branch', "refs/tags/$($manifest.Version)")
-        $repository.SetAttribute('commit', $sourceCommit)
-        [void]$metadata.AppendChild($repository)
-        $readme = $document.CreateElement('readme', $document.DocumentElement.NamespaceURI)
-        $readme.InnerText = 'README.md'
-        [void]$metadata.AppendChild($readme)
         $entry.Delete()
         $stream = $archive.CreateEntry('KlipAround.nuspec').Open()
         try {
-            $document.Save($stream)
+            $writer = [System.IO.StreamWriter]::new($stream, [Text.UTF8Encoding]::new($false))
+            try {
+                $writer.Write($nuspecText)
+            }
+            finally {
+                $writer.Dispose()
+            }
         }
         finally {
             $stream.Dispose()

@@ -81,6 +81,8 @@ $candidateHash
 
 - [ ] Open the archive read-only and inspect its contents and generated
   `KlipAround.nuspec`, not a guessed source nuspec.
+  The build renders this entry from [Build/KlipAround.nuspec.template](../Build/KlipAround.nuspec.template)
+  with current manifest and repository values.
 - [ ] Confirm the explicit file set: module manifest/loader, public/private
   scripts, module tests, about help, README, release notes, and license.
   The repository's `docs` and build tooling are not currently packaged;
