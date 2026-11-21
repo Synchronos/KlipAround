@@ -105,6 +105,12 @@ with `-Path`. Enter the API key interactively; never paste it into source,
 documentation, a command literal, or a public log:
 
 ```powershell
+& .\Build\Publish-KlipAroundRelease.ps1 -PackagePath $package.FullName -Version $version
+```
+
+Equivalent manual flow:
+
+```powershell
 if ((Get-FileHash -LiteralPath $package.FullName -Algorithm SHA256).Hash -ne $candidateHash) {
     throw 'Candidate bytes changed after validation.'
 }
