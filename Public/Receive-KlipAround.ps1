@@ -54,7 +54,11 @@ function Receive-KlipAround {
     }
 
     $sentIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $sentIdOrder = New-Object 'System.Collections.Generic.Queue[string]'
+    $sentIdsMaxCount = 4096
     $seenMessageIds = New-Object 'System.Collections.Generic.HashSet[string]'
+    $seenMessageIdOrder = New-Object 'System.Collections.Generic.Queue[string]'
+    $lastAcceptedMessageId = $null
     $receivedFiles = New-Object System.Collections.Generic.List[System.IO.FileInfo]
     $overallProgressId = 4200
     $fileProgressId = 4201
@@ -62,14 +66,38 @@ function Receive-KlipAround {
     $completedFileIndexes = New-Object 'System.Collections.Generic.HashSet[int]'
     $expectedFileCount = 0
     $tempPath = $null
+    $trackSentId = {
+        param([Parameter(Mandatory)][string]$MessageId)
+        if ($sentIds.Add($MessageId)) {
+            $sentIdOrder.Enqueue($MessageId)
+            while ($sentIdOrder.Count -gt $sentIdsMaxCount) {
+                $expiredId = $sentIdOrder.Dequeue()
+                [void]$sentIds.Remove($expiredId)
+            }
+        }
+    }
+    $publishAndTrack = {
+        param(
+            [Parameter(Mandatory)]
+            [hashtable]$Message,
+
+            [Parameter(Mandatory)]
+            [int]$PublishTimeoutSeconds
+        )
+
+        $publishedMessage = Publish-KlipAroundMessage -Message $Message -TimeoutSeconds $PublishTimeoutSeconds
+        & $trackSentId $publishedMessage.MessageId
+    }
 
     try {
         if ([string]::IsNullOrWhiteSpace($SessionId)) {
             $helloAny = $null
-            $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-            while ((Get-Date) -lt $deadline -and -not $helloAny) {
+            $helloStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+            $helloTimeoutMilliseconds = $TimeoutSeconds * 1000
+            $malformedHelloCount = 0
+            while ($helloStopwatch.ElapsedMilliseconds -lt $helloTimeoutMilliseconds -and -not $helloAny) {
                 try {
-                    $remainingMilliseconds = [int][Math]::Max(250, [Math]::Ceiling(($deadline - (Get-Date)).TotalMilliseconds))
+                    $remainingMilliseconds = [int][Math]::Max(250, $helloTimeoutMilliseconds - $helloStopwatch.ElapsedMilliseconds)
                     $text = Get-KlipAroundClipboardText -TimeoutMilliseconds $remainingMilliseconds
                 }
                 catch [System.InvalidOperationException] {
@@ -83,12 +111,17 @@ function Receive-KlipAround {
                 try {
                     $msg = ConvertFrom-KlipAroundEnvelope -Text $text
                     Write-KlipAroundDebugEnvelope -Direction Receive -Text $text
+                    $malformedHelloCount = 0
                     if ($msg.Role -eq 'Sender' -and $msg.MessageType -eq 'HELLO') {
                         $helloAny = $msg
                         break
                     }
                 }
                 catch {
+                    $malformedHelloCount++
+                    if ($malformedHelloCount -eq 1 -or ($malformedHelloCount % 10) -eq 0) {
+                        Write-Warning "Ignored $malformedHelloCount malformed clipboard payload(s) while waiting for initial HELLO."
+                    }
                     Start-Sleep -Milliseconds 250
                 }
             }
@@ -97,32 +130,51 @@ function Receive-KlipAround {
                 throw "Timed out waiting for initial HELLO from sender."
             }
             $SessionId = [string]$helloAny.SessionId
-            [void]$seenMessageIds.Add([string]$helloAny.MessageId)
+            $helloAnyMessageId = [string]$helloAny.MessageId
+            if ($seenMessageIds.Add($helloAnyMessageId)) {
+                $seenMessageIdOrder.Enqueue($helloAnyMessageId)
+            }
+            $lastAcceptedMessageId = $helloAnyMessageId
             $hello = $helloAny
         }
         else {
-            $hello = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType HELLO -TimeoutSeconds $TimeoutSeconds -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds
+            $hello = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType HELLO -TimeoutSeconds $TimeoutSeconds -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId)
         }
 
         $expectedFileCount = [int]$hello.Payload.FileCount
+        if ($expectedFileCount -lt 0) {
+            throw "Invalid HELLO file count '$($hello.Payload.FileCount)'."
+        }
+        $expectedWindowSize = 16
+        if ($hello.Payload.PSObject.Properties.Name -contains 'WindowSize') {
+            $expectedWindowSize = [int]$hello.Payload.WindowSize
+            if ($expectedWindowSize -lt 1 -or $expectedWindowSize -gt 64) {
+                throw "Invalid HELLO window size '$($hello.Payload.WindowSize)'."
+            }
+        }
+        $expectedBlockSize = 131072
+        if ($hello.Payload.PSObject.Properties.Name -contains 'BlockSize') {
+            $expectedBlockSize = [int]$hello.Payload.BlockSize
+            if ($expectedBlockSize -lt 4096 -or $expectedBlockSize -gt 1048576) {
+                throw "Invalid HELLO block size '$($hello.Payload.BlockSize)'."
+            }
+        }
         $helloAck = New-KlipAroundMessage -SessionId $SessionId -Role Receiver -MessageType HELLO_ACK -Payload @{
             Accepted = $true
             ReceiverHost = $env:COMPUTERNAME
         }
-        $published = Publish-KlipAroundMessage -Message $helloAck -TimeoutSeconds $TimeoutSeconds
-        [void]$sentIds.Add($published.MessageId)
+        & $publishAndTrack $helloAck $TimeoutSeconds
 
         $done = $false
         $dataWaitSeconds = [Math]::Min(3600, $TimeoutSeconds + 1)
         while (-not $done) {
-            $next = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType @('HELLO', 'FILE_META', 'FILE_EOF', 'FIN') -TimeoutSeconds $TimeoutSeconds -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds
+            $next = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType @('HELLO', 'FILE_META', 'FILE_EOF', 'FIN') -TimeoutSeconds $TimeoutSeconds -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId)
             if ($next.MessageType -eq 'HELLO') {
                 $helloAck = New-KlipAroundMessage -SessionId $SessionId -Role Receiver -MessageType HELLO_ACK -Payload @{
                     Accepted = $true
                     ReceiverHost = $env:COMPUTERNAME
                 }
-                $published = Publish-KlipAroundMessage -Message $helloAck -TimeoutSeconds $TimeoutSeconds
-                [void]$sentIds.Add($published.MessageId)
+                & $publishAndTrack $helloAck $TimeoutSeconds
                 continue
             }
             if ($next.MessageType -eq 'FIN') {
@@ -138,14 +190,14 @@ function Receive-KlipAround {
                 $finAck = New-KlipAroundMessage -SessionId $SessionId -Role Receiver -MessageType FIN_ACK -Payload @{
                     ReceivedFiles = $receivedFiles.Count
                 }
-                $published = Publish-KlipAroundMessage -Message $finAck -TimeoutSeconds $TimeoutSeconds
-                [void]$sentIds.Add($published.MessageId)
+                & $publishAndTrack $finAck $TimeoutSeconds
 
                 Write-Verbose "FIN grace idle wait (polling)."
-                $graceDeadline = (Get-Date).AddSeconds($finAckGraceSeconds)
-                while ((Get-Date) -lt $graceDeadline) {
+                $graceStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+                $graceTimeoutMilliseconds = $finAckGraceSeconds * 1000
+                while ($graceStopwatch.ElapsedMilliseconds -lt $graceTimeoutMilliseconds) {
                     try {
-                        $followUp = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType @('FIN', 'HELLO') -TimeoutSeconds 2 -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds -DisableClipboardListener
+                        $followUp = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType @('FIN', 'HELLO') -TimeoutSeconds 2 -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId) -DisableClipboardListener
                     }
                     catch {
                         $isWaitTimeout = $_.Exception.Message -like "Timed out waiting for message types*"
@@ -160,16 +212,14 @@ function Receive-KlipAround {
                             Accepted = $true
                             ReceiverHost = $env:COMPUTERNAME
                         }
-                        $published = Publish-KlipAroundMessage -Message $helloAck -TimeoutSeconds $TimeoutSeconds
-                        [void]$sentIds.Add($published.MessageId)
+                        & $publishAndTrack $helloAck $TimeoutSeconds
                         continue
                     }
 
                     $finAck = New-KlipAroundMessage -SessionId $SessionId -Role Receiver -MessageType FIN_ACK -Payload @{
                         ReceivedFiles = $receivedFiles.Count
                     }
-                    $published = Publish-KlipAroundMessage -Message $finAck -TimeoutSeconds $TimeoutSeconds
-                    [void]$sentIds.Add($published.MessageId)
+                    & $publishAndTrack $finAck $TimeoutSeconds
                 }
 
                 $done = $true
@@ -182,8 +232,7 @@ function Receive-KlipAround {
                         FileIndex = $dupFileIndex
                         Accepted  = $true
                     }
-                    $published = Publish-KlipAroundMessage -Message $eofAck -TimeoutSeconds $TimeoutSeconds
-                    [void]$sentIds.Add($published.MessageId)
+                    & $publishAndTrack $eofAck $TimeoutSeconds
                     continue
                 }
 
@@ -191,16 +240,38 @@ function Receive-KlipAround {
             }
 
             $fileIndex = [int]$next.Payload.FileIndex
+            if ($fileIndex -lt 0 -or $fileIndex -ge $expectedFileCount) {
+                throw "Invalid FILE_META file index $fileIndex for expected file count $expectedFileCount."
+            }
             $fileName = [string]$next.Payload.Name
             $fileLength = [int64]$next.Payload.Length
+            if ($fileLength -lt 0) {
+                throw "Invalid FILE_META length '$($next.Payload.Length)' for file index $fileIndex."
+            }
             $fileSha256FromMeta = [string]$next.Payload.Sha256
             $blockSize = [int]$next.Payload.BlockSize
+            if ($blockSize -lt 4096 -or $blockSize -gt 1048576) {
+                throw "Invalid FILE_META block size $blockSize for file index $fileIndex."
+            }
+            if ($blockSize -ne $expectedBlockSize) {
+                throw "FILE_META block size $blockSize does not match HELLO block size $expectedBlockSize."
+            }
             $totalBlocks = [int]$next.Payload.TotalBlocks
+            if ($totalBlocks -lt 1) {
+                throw "Invalid FILE_META total block count '$($next.Payload.TotalBlocks)' for file index $fileIndex."
+            }
+            $computedTotalBlocks = [int][Math]::Max(1, [Math]::Ceiling($fileLength / [double]$blockSize))
+            if ($computedTotalBlocks -ne $totalBlocks) {
+                throw "FILE_META total block count $totalBlocks does not match expected $computedTotalBlocks for file index $fileIndex."
+            }
             $blockChecksumAlgorithm = if ($next.Payload.PSObject.Properties.Name -contains 'BlockChecksumAlgorithm' -and -not [string]::IsNullOrWhiteSpace([string]$next.Payload.BlockChecksumAlgorithm)) {
                 [string]$next.Payload.BlockChecksumAlgorithm
             }
             else {
                 'CRC32C'
+            }
+            if ($blockChecksumAlgorithm -notin @('CRC32C', 'SHA256')) {
+                throw "Invalid FILE_META block checksum algorithm '$blockChecksumAlgorithm' for file index $fileIndex."
             }
             $processedFiles = [Math]::Max($processedFiles, $fileIndex + 1)
 
@@ -209,8 +280,7 @@ function Receive-KlipAround {
                     FileIndex = $fileIndex
                     Accepted  = $true
                 }
-                $published = Publish-KlipAroundMessage -Message $metaAck -TimeoutSeconds $TimeoutSeconds
-                [void]$sentIds.Add($published.MessageId)
+                & $publishAndTrack $metaAck $TimeoutSeconds
                 continue
             }
 
@@ -237,20 +307,19 @@ function Receive-KlipAround {
                     FileIndex = $fileIndex
                     Accepted  = $true
                 }
-                $published = Publish-KlipAroundMessage -Message $metaAck -TimeoutSeconds $TimeoutSeconds
-                [void]$sentIds.Add($published.MessageId)
+                & $publishAndTrack $metaAck $TimeoutSeconds
 
                 $expectedSeq = 0
-                $outOfOrderBlocks = New-Object 'System.Collections.Generic.Dictionary[int,byte[]]'
+                $outOfOrderBlocks = [System.Collections.Generic.Dictionary[int,byte[]]]::new($expectedWindowSize)
+                $lastFileProgressPercent = -1
                 while ($expectedSeq -lt $totalBlocks) {
-                    $burst = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType @('DATA_BURST', 'HELLO', 'FILE_META') -TimeoutSeconds $dataWaitSeconds -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds
+                    $burst = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType @('DATA_BURST', 'HELLO', 'FILE_META') -TimeoutSeconds $dataWaitSeconds -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId)
                     if ($burst.MessageType -eq 'HELLO') {
                         $helloAck = New-KlipAroundMessage -SessionId $SessionId -Role Receiver -MessageType HELLO_ACK -Payload @{
                             Accepted = $true
                             ReceiverHost = $env:COMPUTERNAME
                         }
-                        $published = Publish-KlipAroundMessage -Message $helloAck -TimeoutSeconds $TimeoutSeconds
-                        [void]$sentIds.Add($published.MessageId)
+                        & $publishAndTrack $helloAck $TimeoutSeconds
                         continue
                     }
                     if ($burst.MessageType -eq 'FILE_META') {
@@ -262,19 +331,46 @@ function Receive-KlipAround {
                             FileIndex = $metaFileIndex
                             Accepted  = $true
                         }
-                        $published = Publish-KlipAroundMessage -Message $metaAck -TimeoutSeconds $TimeoutSeconds
-                        [void]$sentIds.Add($published.MessageId)
+                        & $publishAndTrack $metaAck $TimeoutSeconds
                         continue
                     }
                     if ([int]$burst.Payload.FileIndex -ne $fileIndex) {
                         throw "Received DATA_BURST for file index $($burst.Payload.FileIndex), expected $fileIndex."
                     }
 
-                    $blocks = @($burst.Payload.Blocks | Sort-Object Seq)
+                    $blocks = @($burst.Payload.Blocks)
+                    if ($blocks.Count -lt 1 -or $blocks.Count -gt $expectedWindowSize) {
+                        throw "Received DATA_BURST with invalid block count $($blocks.Count). Expected between 1 and $expectedWindowSize."
+                    }
+                    $isMonotonic = $true
+                    $previousSeq = [int]::MinValue
+                    foreach ($candidateBlock in $blocks) {
+                        $candidateSeq = [int]$candidateBlock.Seq
+                        if ($candidateSeq -lt $previousSeq) {
+                            $isMonotonic = $false
+                            break
+                        }
+                        $previousSeq = $candidateSeq
+                    }
+                    if (-not $isMonotonic) {
+                        $sortedBlockSeqs = New-Object 'System.Int32[]' $blocks.Count
+                        $sortedBlocks = New-Object 'System.Object[]' $blocks.Count
+                        for ($blockIndex = 0; $blockIndex -lt $blocks.Count; $blockIndex++) {
+                            $sortedBlockSeqs[$blockIndex] = [int]$blocks[$blockIndex].Seq
+                            $sortedBlocks[$blockIndex] = $blocks[$blockIndex]
+                        }
+                        [Array]::Sort($sortedBlockSeqs, $sortedBlocks)
+                        $blocks = @($sortedBlocks)
+                    }
+
                     $maxSeqSeen = -1
-                    $explicitMissing = New-Object 'System.Collections.Generic.HashSet[int]'
+                    $explicitMissing = [System.Collections.Generic.HashSet[int]]::new($expectedWindowSize)
                     foreach ($block in $blocks) {
                         $seq = [int]$block.Seq
+                        if ($seq -lt 0 -or $seq -ge $totalBlocks) {
+                            [void]$explicitMissing.Add($seq)
+                            continue
+                        }
                         if ($seq -lt $expectedSeq) {
                             continue
                         }
@@ -285,7 +381,7 @@ function Receive-KlipAround {
                             continue
                         }
                         try {
-                            $bytes = Expand-KlipAroundDataBlock -Block $block -ExpectedChecksumAlgorithm $blockChecksumAlgorithm
+                            $bytes = Expand-KlipAroundDataBlock -Block $block -ExpectedChecksumAlgorithm $blockChecksumAlgorithm -MaximumLength $blockSize
                             $outOfOrderBlocks[$seq] = $bytes
                         }
                         catch {
@@ -306,7 +402,7 @@ function Receive-KlipAround {
                         $expectedSeq++
                     }
 
-                    $missingSeqs = New-Object System.Collections.Generic.List[int]
+                    $missingSeqs = [System.Collections.Generic.List[int]]::new($expectedWindowSize)
                     if ($maxSeqSeen -ge $expectedSeq) {
                         for ($seq = $expectedSeq; $seq -le $maxSeqSeen; $seq++) {
                             if (-not $outOfOrderBlocks.ContainsKey($seq)) {
@@ -316,6 +412,9 @@ function Receive-KlipAround {
                     }
                     foreach ($missingSeq in $explicitMissing) {
                         if ($missingSeq -ge $expectedSeq -and -not $missingSeqs.Contains($missingSeq)) {
+                            if ($missingSeq -ge $totalBlocks) {
+                                continue
+                            }
                             [void]$missingSeqs.Add($missingSeq)
                         }
                     }
@@ -326,11 +425,13 @@ function Receive-KlipAround {
                         TotalBlocks = $totalBlocks
                         MissingSeqs = @($missingSeqs.ToArray() | Sort-Object -Unique)
                     }
-                    $published = Publish-KlipAroundMessage -Message $ack -TimeoutSeconds $TimeoutSeconds
-                    [void]$sentIds.Add($published.MessageId)
+                    & $publishAndTrack $ack $TimeoutSeconds
 
                     $percent = [int](($expectedSeq / [double][Math]::Max(1,$totalBlocks)) * 100)
-                    Write-Progress -Id $fileProgressId -ParentId $overallProgressId -Activity "Receiving $fileName" -Status "Block $expectedSeq of $totalBlocks written ($blockChecksumAlgorithm)" -PercentComplete $percent
+                    if ($percent -ne $lastFileProgressPercent) {
+                        Write-Progress -Id $fileProgressId -ParentId $overallProgressId -Activity "Receiving $fileName" -Status "Block $expectedSeq of $totalBlocks written ($blockChecksumAlgorithm)" -PercentComplete $percent
+                        $lastFileProgressPercent = $percent
+                    }
                 }
 
                 if ($null -eq $streamHasher.Hash) {
@@ -349,7 +450,7 @@ function Receive-KlipAround {
             }
 
             do {
-                $eof = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType @('FILE_EOF', 'DATA_BURST') -TimeoutSeconds $dataWaitSeconds -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds
+                $eof = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType @('FILE_EOF', 'DATA_BURST') -TimeoutSeconds $dataWaitSeconds -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId)
                 if ($eof.MessageType -eq 'DATA_BURST') {
                     if ([int]$eof.Payload.FileIndex -ne $fileIndex) {
                         throw "Received DATA_BURST for file index $($eof.Payload.FileIndex), expected $fileIndex."
@@ -360,8 +461,7 @@ function Receive-KlipAround {
                         TotalBlocks = $totalBlocks
                         MissingSeqs = @()
                     }
-                    $published = Publish-KlipAroundMessage -Message $ack -TimeoutSeconds $TimeoutSeconds
-                    [void]$sentIds.Add($published.MessageId)
+                    & $publishAndTrack $ack $TimeoutSeconds
                 }
             } while ($eof.MessageType -eq 'DATA_BURST')
             if ([int]$eof.Payload.FileIndex -ne $fileIndex) {
@@ -398,8 +498,7 @@ function Receive-KlipAround {
                 FileIndex = $fileIndex
                 Accepted  = $true
             }
-            $published = Publish-KlipAroundMessage -Message $eofAck -TimeoutSeconds $TimeoutSeconds
-            [void]$sentIds.Add($published.MessageId)
+            & $publishAndTrack $eofAck $TimeoutSeconds
             [void]$completedFileIndexes.Add($fileIndex)
         }
 

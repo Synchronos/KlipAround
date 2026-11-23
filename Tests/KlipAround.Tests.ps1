@@ -15,6 +15,57 @@ Describe 'KlipAround envelope and block helpers' {
             $parsed.Payload.Value | Should -Be 'X'
         }
 
+        It 'generates UUIDv7 monotonic message identifiers' {
+            $ids = for ($i = 0; $i -lt 64; $i++) {
+                (New-KlipAroundMessage -SessionId 'uuidv7' -Role Sender -MessageType HELLO).MessageId
+            }
+
+            foreach ($id in $ids) {
+                $id | Should -Match '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+            }
+
+            for ($i = 1; $i -lt $ids.Count; $i++) {
+                ([string]::CompareOrdinal($ids[$i - 1], $ids[$i]) -lt 0) | Should -BeTrue
+            }
+        }
+
+        It 'rolls UUIDv7 monotonic counters and advances timestamp on overflow' {
+            $originalLastTimestampMs = [int64]$script:KlipAroundUuid7LastTimestampMs
+            $originalRandA = [int]$script:KlipAroundUuid7RandA
+            $originalRandB = [int64]$script:KlipAroundUuid7RandB
+            try {
+                $baseTimestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + 1000
+
+                $script:KlipAroundUuid7LastTimestampMs = $baseTimestamp
+                $script:KlipAroundUuid7RandA = 9
+                $script:KlipAroundUuid7RandB = $script:KlipAroundUuid7MaxRandB - 1
+
+                [void](New-KlipAroundUuidV7)
+                $script:KlipAroundUuid7LastTimestampMs | Should -Be $baseTimestamp
+                $script:KlipAroundUuid7RandA | Should -Be 9
+                $script:KlipAroundUuid7RandB | Should -Be $script:KlipAroundUuid7MaxRandB
+
+                [void](New-KlipAroundUuidV7)
+                $script:KlipAroundUuid7LastTimestampMs | Should -Be $baseTimestamp
+                $script:KlipAroundUuid7RandA | Should -Be 10
+                $script:KlipAroundUuid7RandB | Should -Be 0
+
+                $script:KlipAroundUuid7RandA = $script:KlipAroundUuid7MaxRandA
+                $script:KlipAroundUuid7RandB = $script:KlipAroundUuid7MaxRandB
+
+                $overflowId = New-KlipAroundUuidV7
+                $script:KlipAroundUuid7LastTimestampMs | Should -Be ($baseTimestamp + 1)
+                $script:KlipAroundUuid7RandA | Should -Be 0
+                $script:KlipAroundUuid7RandB | Should -Be 0
+                $overflowId | Should -Match '^[0-9a-f]{8}-[0-9a-f]{4}-7000-8000-000000000000$'
+            }
+            finally {
+                $script:KlipAroundUuid7LastTimestampMs = $originalLastTimestampMs
+                $script:KlipAroundUuid7RandA = $originalRandA
+                $script:KlipAroundUuid7RandB = $originalRandB
+            }
+        }
+
         It 'keeps payload expansion near one Base64 layer' {
             $bytes = New-Object byte[] 262144
             $block = New-KlipAroundDataBlock -Sequence 0 -Bytes $bytes -ChecksumAlgorithm SHA256
@@ -38,6 +89,20 @@ Describe 'KlipAround envelope and block helpers' {
             $oldBody = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($oldJson))
             $oldEnvelope = "-----BEGIN KLIPAROUND-----`n$oldBody`n-----END KLIPAROUND-----"
             { ConvertFrom-KlipAroundEnvelope -Text $oldEnvelope } | Should -Throw '*not a KlipAround envelope*'
+        }
+
+        It 'rejects envelopes that exceed the configured size limit' {
+            $originalLimit = $script:KlipAroundEnvelopeMaxUtf8Bytes
+            try {
+                $script:KlipAroundEnvelopeMaxUtf8Bytes = 64
+                $payload = @{ Value = ('A' * 128) }
+                $message = New-KlipAroundMessage -SessionId 'limit-test' -Role Sender -MessageType HELLO -Payload $payload
+                $text = ConvertTo-KlipAroundEnvelope -Message $message
+                { ConvertFrom-KlipAroundEnvelope -Text $text } | Should -Throw '*exceeds maximum allowed size*'
+            }
+            finally {
+                $script:KlipAroundEnvelopeMaxUtf8Bytes = $originalLimit
+            }
         }
 
         It 'ignores sent and previously seen message IDs' {
@@ -67,6 +132,60 @@ Describe 'KlipAround envelope and block helpers' {
             Should -Invoke Write-Debug -Times 1 -Exactly -ParameterFilter { $Message -like '*duplicate message already processed*' }
         }
 
+        It 'ignores stale monotonic message IDs before dedupe checks' {
+            $olderMessage = New-KlipAroundMessage -SessionId 'monotonic' -Role Sender -MessageType HELLO
+            $newerMessage = New-KlipAroundMessage -SessionId 'monotonic' -Role Sender -MessageType HELLO
+            $acceptedMessage = New-KlipAroundMessage -SessionId 'monotonic' -Role Sender -MessageType HELLO
+            $lastAcceptedMessageId = $newerMessage.MessageId
+            $seen = [System.Collections.Generic.HashSet[string]]::new()
+            $seenOrder = New-Object 'System.Collections.Generic.Queue[string]'
+            $script:monotonicMessages = @($olderMessage, $acceptedMessage)
+            $script:monotonicIndex = 0
+            Mock New-KlipAroundClipboardListener { $null }
+            Mock Start-Sleep { }
+            Mock Write-Debug { }
+            Mock Get-KlipAroundClipboardText {
+                $message = $script:monotonicMessages[$script:monotonicIndex]
+                $script:monotonicIndex++
+                return ConvertTo-KlipAroundEnvelope -Message $message
+            }
+
+            $received = Wait-KlipAroundMessage -SessionId 'monotonic' -ExpectedRole Sender -ExpectedMessageType HELLO -TimeoutSeconds 1 -SeenMessageIds $seen -SeenMessageIdOrder $seenOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId) -Debug
+            $received.MessageId | Should -Be $acceptedMessage.MessageId
+            $lastAcceptedMessageId | Should -Be $acceptedMessage.MessageId
+            $seen.Contains($olderMessage.MessageId) | Should -BeFalse
+            $seen.Contains($acceptedMessage.MessageId) | Should -BeTrue
+            Should -Invoke Write-Debug -Times 1 -Exactly -ParameterFilter { $Message -like '*monotonic watermark*' }
+        }
+
+        It 'bounds seen message ID history with configured max count' {
+            $messages = @(
+                (New-KlipAroundMessage -SessionId 'seen-window' -Role Sender -MessageType HELLO),
+                (New-KlipAroundMessage -SessionId 'seen-window' -Role Sender -MessageType HELLO),
+                (New-KlipAroundMessage -SessionId 'seen-window' -Role Sender -MessageType HELLO)
+            )
+            $seen = [System.Collections.Generic.HashSet[string]]::new()
+            $seenOrder = New-Object 'System.Collections.Generic.Queue[string]'
+            $lastAcceptedMessageId = $null
+            Mock New-KlipAroundClipboardListener { $null }
+            Mock Start-Sleep { }
+            Mock Get-KlipAroundClipboardText {
+                return ConvertTo-KlipAroundEnvelope -Message $messages[$script:seenWindowIndex]
+            }
+
+            for ($script:seenWindowIndex = 0; $script:seenWindowIndex -lt $messages.Count; $script:seenWindowIndex++) {
+                $received = Wait-KlipAroundMessage -SessionId 'seen-window' -ExpectedRole Sender -ExpectedMessageType HELLO -TimeoutSeconds 1 -SeenMessageIds $seen -SeenMessageIdOrder $seenOrder -SeenMessageIdsMaxCount 2 -LastAcceptedMessageId ([ref]$lastAcceptedMessageId)
+                $received.MessageId | Should -Be $messages[$script:seenWindowIndex].MessageId
+            }
+
+            $seen.Count | Should -Be 2
+            $seen.Contains($messages[0].MessageId) | Should -BeFalse
+            $seen.Contains($messages[1].MessageId) | Should -BeTrue
+            $seen.Contains($messages[2].MessageId) | Should -BeTrue
+            $seenOrder.Count | Should -Be 2
+            $lastAcceptedMessageId | Should -Be $messages[2].MessageId
+        }
+
         It 'round-trips data block with checksum verification' {
             $bytes = [byte[]](1..50)
             $block = New-KlipAroundDataBlock -Sequence 2 -Bytes $bytes
@@ -79,6 +198,18 @@ Describe 'KlipAround envelope and block helpers' {
             $block = New-KlipAroundDataBlock -Sequence 4 -Bytes $bytes -ChecksumAlgorithm SHA256
             $decoded = Expand-KlipAroundDataBlock -Block ([pscustomobject]$block) -ExpectedChecksumAlgorithm SHA256
             [Convert]::ToBase64String($decoded) | Should -Be ([Convert]::ToBase64String($bytes))
+        }
+
+        It 'rejects blocks whose declared size exceeds allowed maximum' {
+            $block = [pscustomobject]@{
+                Seq               = 0
+                Length            = 4097
+                ChecksumAlgorithm = 'SHA256'
+                Checksum          = (Get-KlipAroundBlockChecksumHexForByteArray -Bytes ([byte[]](1..4)) -Algorithm SHA256)
+                Data              = [Convert]::ToBase64String([byte[]](1..4))
+            }
+            { Expand-KlipAroundDataBlock -Block $block -ExpectedChecksumAlgorithm SHA256 -MaximumLength 4096 } |
+                Should -Throw '*exceeds allowed maximum*'
         }
 
         It 'matches CRC32C check values on cold and cached tables' {
@@ -274,7 +405,7 @@ Describe 'Received file names' {
             Mock Wait-KlipAroundMessage {
                 $script:receiveTestWaitCount++
                 if ($script:receiveTestWaitCount -eq 1) {
-                    return [pscustomobject]@{ MessageType = 'HELLO'; Payload = [pscustomobject]@{ FileCount = 1 } }
+                    return [pscustomobject]@{ MessageType = 'HELLO'; Payload = [pscustomobject]@{ FileCount = 1; BlockSize = 4096; WindowSize = 16 } }
                 }
                 return [pscustomobject]@{
                     MessageType = 'FILE_META'
@@ -300,7 +431,7 @@ Describe 'Received file names' {
             Mock Wait-KlipAroundMessage {
                 $script:receiveTestWaitCount++
                 switch ($script:receiveTestWaitCount) {
-                    1 { return [pscustomobject]@{ MessageType = 'HELLO'; Payload = [pscustomobject]@{ FileCount = 1 } } }
+                    1 { return [pscustomobject]@{ MessageType = 'HELLO'; Payload = [pscustomobject]@{ FileCount = 1; BlockSize = 4096; WindowSize = 16 } } }
                     2 { return [pscustomobject]@{ MessageType = 'FILE_META'; Payload = [pscustomobject]@{ FileIndex = 0; Name = 'existing.bin'; Length = 1; Sha256 = ''; BlockSize = 4096; TotalBlocks = 1; BlockChecksumAlgorithm = 'SHA256' } } }
                     3 {
                         $block = New-KlipAroundDataBlock -Sequence 0 -Bytes ([byte[]]@(42)) -ChecksumAlgorithm SHA256
@@ -323,7 +454,7 @@ Describe 'Received file names' {
             Mock Wait-KlipAroundMessage {
                 $script:receiveTestWaitCount++
                 switch ($script:receiveTestWaitCount) {
-                    1 { return [pscustomobject]@{ MessageType = 'HELLO'; Payload = [pscustomobject]@{ FileCount = 1 } } }
+                    1 { return [pscustomobject]@{ MessageType = 'HELLO'; Payload = [pscustomobject]@{ FileCount = 1; BlockSize = 4096; WindowSize = 16 } } }
                     2 { return [pscustomobject]@{ MessageType = 'FILE_META'; Payload = [pscustomobject]@{ FileIndex = 0; Name = 'timeout.bin'; Length = 1; Sha256 = ''; BlockSize = 4096; TotalBlocks = 1; BlockChecksumAlgorithm = 'SHA256' } } }
                     default { throw 'Simulated timeout' }
                 }
@@ -342,7 +473,7 @@ Describe 'Received file names' {
             Mock Wait-KlipAroundMessage {
                 $script:receiveTestWaitCount++
                 switch ($script:receiveTestWaitCount) {
-                    1 { return [pscustomobject]@{ MessageType = 'HELLO'; Payload = [pscustomobject]@{ FileCount = 1 } } }
+                    1 { return [pscustomobject]@{ MessageType = 'HELLO'; Payload = [pscustomobject]@{ FileCount = 1; BlockSize = 4096; WindowSize = 16 } } }
                     2 { return [pscustomobject]@{ MessageType = 'FILE_META'; Payload = [pscustomobject]@{ FileIndex = 0; Name = 'replace.bin'; Length = 1; Sha256 = ''; BlockSize = 4096; TotalBlocks = 1; BlockChecksumAlgorithm = 'SHA256' } } }
                     3 {
                         $block = New-KlipAroundDataBlock -Sequence 0 -Bytes ([byte[]]@(42)) -ChecksumAlgorithm SHA256
@@ -637,7 +768,7 @@ Describe 'KlipAround clipboard listener' {
             }
         }
 
-        Describe 'Multi-file transfer' {
+        Describe 'Multi-file transfer' -Tag @('Slow', 'TransferMatrix') {
             It 'transfers boundary-sized files with <InputMode>, <Algorithm> and PrecomputeHash=<PrecomputeHash>' -TestCases @(
                 @{ InputMode = 'NativeLinuxClipboard'; Algorithm = 'SHA256'; PrecomputeHash = $false }
                 @{ InputMode = 'Parameter'; Algorithm = 'SHA256'; PrecomputeHash = $false }
@@ -890,6 +1021,34 @@ Describe 'KlipAround clipboard listener' {
                 { Send-KlipAround -Path $path -TimeoutSeconds 1 -MaxRetries 2 } |
                     Should -Throw '*Timed out waiting for message types*'
                 Should -Invoke Publish-KlipAroundMessage -Times 3 -Exactly -ParameterFilter { $Message.MessageType -eq 'DATA_BURST' }
+            }
+
+            It 'rejects ACK_REPORT values that are outside sender bounds' {
+                $path = Join-Path $TestDrive 'invalid-ack.bin'
+                [IO.File]::WriteAllBytes($path, [byte[]]@(1, 2))
+                Mock Publish-KlipAroundMessage { param($Message) return $Message }
+                Mock Wait-KlipAroundMessage {
+                    if ($ExpectedMessageType -eq 'HELLO_ACK') {
+                        return [pscustomobject]@{ Payload = [pscustomobject]@{ Accepted = $true } }
+                    }
+                    if ($ExpectedMessageType -eq 'FILE_META_ACK') {
+                        return [pscustomobject]@{ Payload = [pscustomobject]@{ FileIndex = 0 } }
+                    }
+                    if ($ExpectedMessageType -eq 'ACK_REPORT') {
+                        return [pscustomobject]@{
+                            Payload = [pscustomobject]@{
+                                FileIndex = 0
+                                AckNextSeq = 9
+                                TotalBlocks = 1
+                                MissingSeqs = @()
+                            }
+                        }
+                    }
+                    throw "Unexpected wait for message type '$ExpectedMessageType'."
+                }
+
+                { Send-KlipAround -Path $path -TimeoutSeconds 1 -MaxRetries 1 } |
+                    Should -Throw '*out of bounds*'
             }
         }
     }

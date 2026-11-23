@@ -27,6 +27,8 @@ established by the available evidence.
 | [0011](0011-validate-supported-platforms-in-ci.md) | Validate supported platforms in CI |
 | [0012](0012-publish-versioned-documentation-and-provenance.md) | Publish versioned documentation and provenance metadata |
 | [0013](0013-include-tests-in-gallery-packages-for-validation.md) | Include tests in Gallery packages for release validation |
+| [0014](0014-enforce-fail-closed-protocol-validation-guardrails.md) | Enforce fail-closed protocol validation guardrails |
+| [0015](0015-use-monotonic-uuidv7-message-ids.md) | Use monotonic UUIDv7 message IDs |
 
 Use [adr-template.md](adr-template.md) for new records. See
 [MADR](https://adr.github.io/madr/) and

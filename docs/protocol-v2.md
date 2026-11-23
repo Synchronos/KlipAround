@@ -24,15 +24,16 @@ The publisher emits these three lines, using the platform newline:
 
 ```text
 -----BEGIN KLIPAROUND/2-----
-{"Protocol":"KlipAround/2","SessionId":"example","Role":"Sender","MessageType":"HELLO","MessageId":"c9df74f0-8040-4b79-8126-405220272340","TimestampUtc":"2026-11-20T05:00:00.0000000Z","Payload":{"FileCount":1,"WindowSize":16,"BlockSize":131072,"SenderHost":"example-host","SenderUser":"example-user","StartedUtc":"2026-11-20T05:00:00.0000000Z"}}
+{"Protocol":"KlipAround/2","SessionId":"example","Role":"Sender","MessageType":"HELLO","MessageId":"0198a2f4-03ad-7000-8000-000000000000","TimestampUtc":"2026-11-20T05:00:00.0000000Z","Payload":{"FileCount":1,"WindowSize":16,"BlockSize":131072,"SenderHost":"example-host","SenderUser":"example-user","StartedUtc":"2026-11-20T05:00:00.0000000Z"}}
 -----END KLIPAROUND/2-----
 ```
 
 The JSON is compact and is **not** itself Base64-encoded. Only block data is
 Base64. JSON property order is not significant. The parser normalizes CRLF to
 LF, locates the begin marker and the subsequent newline-prefixed end marker,
-trims the intervening JSON, parses it, and checks `Protocol`. It tolerates
-surrounding text; publishers should emit just the envelope.
+trims the intervening JSON, enforces a maximum envelope size, parses it, and
+checks `Protocol`. It tolerates surrounding text; publishers should emit just
+the envelope.
 
 | Field | Publisher representation | Meaning |
 | --- | --- | --- |
@@ -40,13 +41,14 @@ surrounding text; publishers should emit just the envelope.
 | `SessionId` | String; sender defaults to a GUID | Transfer correlation identity. |
 | `Role` | `Sender` or `Receiver` | Publishing endpoint's role. |
 | `MessageType` | String from the table below | State-machine operation. |
-| `MessageId` | New GUID string for each publication | Duplicate and self-message filtering. Retries use new IDs. |
+| `MessageId` | New UUIDv7 string for each publication | Duplicate and self-message filtering. Retries use new IDs. |
 | `TimestampUtc` | UTC round-trip-format string | Diagnostic timestamp; not a replay deadline or ordering guarantee. |
 | `Payload` | JSON object | Message-specific data. |
 
-The envelope parser is not a complete schema validator. The transfer commands
-read and validate fields as needed; do not depend on malformed inputs being
-accepted or on every unexpected field being rejected.
+The envelope parser is not a complete schema validator. Transfer commands still
+perform message-specific validation and now reject oversized envelopes and
+invalid protocol state transitions; do not depend on malformed inputs being
+accepted.
 
 ## Message payloads
 
@@ -68,11 +70,11 @@ counts before Base64 encoding. Hashes are hexadecimal strings.
 | `ERROR` | Either role in the message constructor | Reserved: current transfer commands do not publish or handle this as an error-exchange mechanism. Errors are reported locally; the peer may time out. |
 
 `Accepted` and count fields are not a general negotiation mechanism. The sender
-checks `HELLO_ACK.Accepted` and matching file indexes on file acknowledgments,
-but does not validate all other acknowledgment fields. The receiver validates
-received file length against `FILE_META.Length`, not `FILE_EOF.Length`, and
-uses the hello count for progress rather than enforcing a final count match.
-New implementations should send consistent values, not rely on these omissions.
+checks `HELLO_ACK.Accepted`, validates `ACK_REPORT` bounds and monotonic
+progress, and validates matching file indexes on file acknowledgments. The
+receiver validates received file length against `FILE_META.Length`, not
+`FILE_EOF.Length`, and uses the hello count for progress rather than enforcing
+a final count match.
 
 ### Data blocks and checksums
 
@@ -102,6 +104,8 @@ explicit algorithm and checksum fields.
 The decoder validates Base64, decoded length, and checksum. A failed block
 decode becomes a missing sequence request rather than immediate file acceptance.
 The whole file is always checked with SHA-256, regardless of block algorithm.
+Per-block decoded bytes are also bounded by receiver metadata and implementation
+limits.
 
 The public sender accepts block sizes from 4096 through 1048576 bytes and
 windows from 1 through 64 blocks. A burst includes Base64 expansion plus JSON

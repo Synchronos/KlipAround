@@ -1,6 +1,6 @@
 @{
     RootModule        = 'KlipAround.psm1'
-    ModuleVersion     = '1.0.2'
+    ModuleVersion     = '1.0.3'
     GUID              = '7a99dca2-8543-4c40-98f4-a21868895a3e'
     Author            = 'James Coe'
     CompanyName       = 'Community'
@@ -27,7 +27,7 @@
             Tags       = @('Clipboard', 'Transfer', 'PowerShell', 'HDLC', 'KlipAround', 'PSEdition_Desktop', 'PSEdition_Core', 'Windows', 'Linux')
             LicenseUri = 'https://github.com/Synchronos/KlipAround/blob/main/LICENSE'
             ProjectUri = 'https://github.com/Synchronos/KlipAround'
-            ReleaseNotes = 'https://github.com/Synchronos/KlipAround/blob/1.0.2/RELEASE-NOTES.md'
+            ReleaseNotes = 'https://github.com/Synchronos/KlipAround/blob/1.0.3/RELEASE-NOTES.md'
         }
     }
 }

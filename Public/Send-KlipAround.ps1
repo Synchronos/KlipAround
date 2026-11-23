@@ -108,7 +108,11 @@ function Send-KlipAround {
         }
 
         $sentMessageIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        $sentMessageIdOrder = New-Object 'System.Collections.Generic.Queue[string]'
+        $sentMessageIdsMaxCount = 4096
         $seenMessageIds = New-Object 'System.Collections.Generic.HashSet[string]'
+        $seenMessageIdOrder = New-Object 'System.Collections.Generic.Queue[string]'
+        $lastAcceptedMessageId = $null
         $overallProgressId = 4100
         $fileProgressId = 4101
         $results = New-Object System.Collections.Generic.List[object]
@@ -154,6 +158,28 @@ function Send-KlipAround {
 
             return ,$buffer
         }
+        $trackSentMessageId = {
+            param([Parameter(Mandatory)][string]$MessageId)
+            if ($sentMessageIds.Add($MessageId)) {
+                $sentMessageIdOrder.Enqueue($MessageId)
+                while ($sentMessageIdOrder.Count -gt $sentMessageIdsMaxCount) {
+                    $expiredId = $sentMessageIdOrder.Dequeue()
+                    [void]$sentMessageIds.Remove($expiredId)
+                }
+            }
+        }
+        $publishAndTrackMessage = {
+            param(
+                [Parameter(Mandatory)]
+                [hashtable]$Message,
+
+                [Parameter(Mandatory)]
+                [int]$PublishTimeoutSeconds
+            )
+
+            $publishedMessage = Publish-KlipAroundMessage -Message $Message -TimeoutSeconds $PublishTimeoutSeconds
+            & $trackSentMessageId $publishedMessage.MessageId
+        }
         try {
             $helloPayload = @{
                 FileCount   = $files.Count
@@ -167,8 +193,7 @@ function Send-KlipAround {
             $helloWait = [System.Diagnostics.Stopwatch]::StartNew()
             while ($helloWait.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
                 $hello = New-KlipAroundMessage -SessionId $SessionId -Role Sender -MessageType HELLO -Payload $helloPayload
-                $published = Publish-KlipAroundMessage -Message $hello -TimeoutSeconds $TimeoutSeconds
-                [void]$sentMessageIds.Add($published.MessageId)
+                & $publishAndTrackMessage $hello $TimeoutSeconds
 
                 $remainingSeconds = [int][Math]::Ceiling($TimeoutSeconds - $helloWait.Elapsed.TotalSeconds)
                 if ($remainingSeconds -lt 1) {
@@ -177,7 +202,7 @@ function Send-KlipAround {
                 $attemptTimeoutSeconds = [Math]::Min(10, $remainingSeconds)
 
                 try {
-                    $helloAck = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Receiver -ExpectedMessageType HELLO_ACK -TimeoutSeconds $attemptTimeoutSeconds -IgnoreMessageIds $sentMessageIds -SeenMessageIds $seenMessageIds
+                    $helloAck = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Receiver -ExpectedMessageType HELLO_ACK -TimeoutSeconds $attemptTimeoutSeconds -IgnoreMessageIds $sentMessageIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId)
                     break
                 }
                 catch {
@@ -224,8 +249,7 @@ function Send-KlipAround {
                 $metaWait = [System.Diagnostics.Stopwatch]::StartNew()
                 while ($metaWait.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
                     $meta = New-KlipAroundMessage -SessionId $SessionId -Role Sender -MessageType FILE_META -Payload $metaPayload
-                    $published = Publish-KlipAroundMessage -Message $meta -TimeoutSeconds $TimeoutSeconds
-                    [void]$sentMessageIds.Add($published.MessageId)
+                    & $publishAndTrackMessage $meta $TimeoutSeconds
 
                     $remainingSeconds = [int][Math]::Ceiling($TimeoutSeconds - $metaWait.Elapsed.TotalSeconds)
                     if ($remainingSeconds -lt 1) {
@@ -234,7 +258,7 @@ function Send-KlipAround {
                     $attemptTimeoutSeconds = [Math]::Min(10, $remainingSeconds)
 
                     try {
-                        $metaAck = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Receiver -ExpectedMessageType FILE_META_ACK -TimeoutSeconds $attemptTimeoutSeconds -IgnoreMessageIds $sentMessageIds -SeenMessageIds $seenMessageIds
+                        $metaAck = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Receiver -ExpectedMessageType FILE_META_ACK -TimeoutSeconds $attemptTimeoutSeconds -IgnoreMessageIds $sentMessageIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId)
                         break
                     }
                     catch {
@@ -259,15 +283,18 @@ function Send-KlipAround {
                 $streamedFileHash = $null
                 try {
                     $nextSeq = 0
-                    $pendingSrejSeqs = New-Object 'System.Collections.Generic.HashSet[int]'
-                    $blockCache = New-Object 'System.Collections.Generic.Dictionary[int,hashtable]'
+                    $pendingSrejSeqs = [System.Collections.Generic.HashSet[int]]::new($WindowSize)
+                    $blockCache = [System.Collections.Generic.Dictionary[int,hashtable]]::new($WindowSize * 2)
                     $hashedUntilSeq = 0
                     $lastAckSignature = $null
                     $retries = 0
+                    $lastFileProgressPercent = -1
                     while ($nextSeq -lt $totalBlocks) {
-                        $sequencesToSend = New-Object System.Collections.Generic.List[int]
+                        $sequencesToSend = [System.Collections.Generic.List[int]]::new($WindowSize)
                         if ($pendingSrejSeqs.Count -gt 0) {
-                            $sortedPending = @($pendingSrejSeqs | Sort-Object)
+                            $sortedPending = New-Object 'System.Int32[]' $pendingSrejSeqs.Count
+                            $pendingSrejSeqs.CopyTo($sortedPending)
+                            [Array]::Sort($sortedPending)
                             foreach ($pendingSeq in $sortedPending) {
                                 if ($sequencesToSend.Count -ge $WindowSize) {
                                     break
@@ -281,7 +308,7 @@ function Send-KlipAround {
                             }
                         }
 
-                        $blocks = New-Object System.Collections.Generic.List[hashtable]
+                        $blocks = [System.Collections.Generic.List[hashtable]]::new($sequencesToSend.Count)
                         foreach ($sequence in $sequencesToSend) {
                             if ($blockCache.ContainsKey($sequence)) {
                                 [void]$blocks.Add($blockCache[$sequence])
@@ -313,17 +340,16 @@ function Send-KlipAround {
 
                         $burstPayload = @{
                             FileIndex = $fileIndex
-                            StartSeq  = [int]($sequencesToSend | Measure-Object -Minimum).Minimum
+                            StartSeq  = [int]$sequencesToSend[0]
                             Blocks    = $blocks
                         }
                         $ack = $null
                         $ackWaitSeconds = [Math]::Max(1, [int][Math]::Floor($TimeoutSeconds / 2.0))
                         for ($attempt = 0; $attempt -le $MaxRetries; $attempt++) {
                             $burst = New-KlipAroundMessage -SessionId $SessionId -Role Sender -MessageType DATA_BURST -Payload $burstPayload
-                            $published = Publish-KlipAroundMessage -Message $burst -TimeoutSeconds $TimeoutSeconds
-                            [void]$sentMessageIds.Add($published.MessageId)
+                            & $publishAndTrackMessage $burst $TimeoutSeconds
                             try {
-                                $ack = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Receiver -ExpectedMessageType ACK_REPORT -TimeoutSeconds $ackWaitSeconds -IgnoreMessageIds $sentMessageIds -SeenMessageIds $seenMessageIds
+                                $ack = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Receiver -ExpectedMessageType ACK_REPORT -TimeoutSeconds $ackWaitSeconds -IgnoreMessageIds $sentMessageIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId)
                                 break
                             }
                             catch {
@@ -337,10 +363,40 @@ function Send-KlipAround {
                             throw "Unexpected ACK_REPORT for file index $($ack.Payload.FileIndex), expected $fileIndex."
                         }
 
+                        $ackTotalBlocks = [int]$ack.Payload.TotalBlocks
+                        if ($ackTotalBlocks -ne $totalBlocks) {
+                            throw "ACK_REPORT total block count $ackTotalBlocks does not match expected $totalBlocks for file index $fileIndex."
+                        }
+
                         $ackNextSeq = [int]$ack.Payload.AckNextSeq
+                        if ($ackNextSeq -lt 0 -or $ackNextSeq -gt $totalBlocks) {
+                            throw "ACK_REPORT next sequence $ackNextSeq is out of bounds for file index $fileIndex."
+                        }
+                        if ($ackNextSeq -lt $nextSeq) {
+                            throw "ACK_REPORT next sequence $ackNextSeq regressed from $nextSeq for file index $fileIndex."
+                        }
+
                         $srejMissingSeqs = @()
                         if ($ack.Payload.PSObject.Properties.Name -contains 'MissingSeqs' -and $null -ne $ack.Payload.MissingSeqs) {
-                            $srejMissingSeqs = @($ack.Payload.MissingSeqs | ForEach-Object { [int]$_ } | Where-Object { $_ -ge $ackNextSeq -and $_ -lt $totalBlocks } | Sort-Object -Unique)
+                            $parsedMissingSet = [System.Collections.Generic.HashSet[int]]::new()
+                            foreach ($rawMissingSeq in $ack.Payload.MissingSeqs) {
+                                [void]$parsedMissingSet.Add([int]$rawMissingSeq)
+                            }
+                            $parsedMissingSeqs = New-Object 'System.Int32[]' $parsedMissingSet.Count
+                            $parsedMissingSet.CopyTo($parsedMissingSeqs)
+                            [Array]::Sort($parsedMissingSeqs)
+
+                            $hasInvalidMissingSeq = $false
+                            foreach ($missingSeq in $parsedMissingSeqs) {
+                                if ($missingSeq -lt $ackNextSeq -or $missingSeq -ge $totalBlocks) {
+                                    $hasInvalidMissingSeq = $true
+                                    break
+                                }
+                            }
+                            if ($hasInvalidMissingSeq) {
+                                throw "ACK_REPORT contains out-of-range missing sequences for file index $fileIndex."
+                            }
+                            $srejMissingSeqs = $parsedMissingSeqs
                         }
 
                         if ($ackNextSeq -gt $nextSeq) {
@@ -375,7 +431,10 @@ function Send-KlipAround {
                         }
 
                         $percent = [int](($nextSeq / [double]$totalBlocks) * 100)
-                        Write-Progress -Id $fileProgressId -ParentId $overallProgressId -Activity "Sending $($fileInfo.Name)" -Status "Block $nextSeq of $totalBlocks acknowledged ($BlockChecksumAlgorithm)" -PercentComplete $percent
+                        if ($percent -ne $lastFileProgressPercent) {
+                            Write-Progress -Id $fileProgressId -ParentId $overallProgressId -Activity "Sending $($fileInfo.Name)" -Status "Block $nextSeq of $totalBlocks acknowledged ($BlockChecksumAlgorithm)" -PercentComplete $percent
+                            $lastFileProgressPercent = $percent
+                        }
                     }
 
                     if (-not $PrecomputeHash) {
@@ -407,8 +466,7 @@ function Send-KlipAround {
                 $eofWait = [System.Diagnostics.Stopwatch]::StartNew()
                 while ($eofWait.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
                     $eof = New-KlipAroundMessage -SessionId $SessionId -Role Sender -MessageType FILE_EOF -Payload $eofPayload
-                    $published = Publish-KlipAroundMessage -Message $eof -TimeoutSeconds $TimeoutSeconds
-                    [void]$sentMessageIds.Add($published.MessageId)
+                    & $publishAndTrackMessage $eof $TimeoutSeconds
 
                     $remainingSeconds = [int][Math]::Ceiling($TimeoutSeconds - $eofWait.Elapsed.TotalSeconds)
                     if ($remainingSeconds -lt 1) {
@@ -417,7 +475,7 @@ function Send-KlipAround {
                     $attemptTimeoutSeconds = [Math]::Min(10, $remainingSeconds)
 
                     try {
-                        $eofAck = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Receiver -ExpectedMessageType FILE_EOF_ACK -TimeoutSeconds $attemptTimeoutSeconds -IgnoreMessageIds $sentMessageIds -SeenMessageIds $seenMessageIds
+                        $eofAck = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Receiver -ExpectedMessageType FILE_EOF_ACK -TimeoutSeconds $attemptTimeoutSeconds -IgnoreMessageIds $sentMessageIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId)
                         break
                     }
                     catch {
@@ -457,8 +515,7 @@ function Send-KlipAround {
             $finRetries = 0
             while ($finWait.Elapsed.TotalSeconds -lt $TimeoutSeconds -and $finRetries -le $MaxRetries) {
                 $fin = New-KlipAroundMessage -SessionId $SessionId -Role Sender -MessageType FIN -Payload $finPayload
-                $published = Publish-KlipAroundMessage -Message $fin -TimeoutSeconds $TimeoutSeconds
-                [void]$sentMessageIds.Add($published.MessageId)
+                & $publishAndTrackMessage $fin $TimeoutSeconds
 
                 $remainingSeconds = [int][Math]::Ceiling($TimeoutSeconds - $finWait.Elapsed.TotalSeconds)
                 if ($remainingSeconds -lt 1) {
@@ -467,7 +524,7 @@ function Send-KlipAround {
                 $attemptTimeoutSeconds = [Math]::Min($finRetrySeconds, $remainingSeconds)
 
                 try {
-                    $finAck = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Receiver -ExpectedMessageType FIN_ACK -TimeoutSeconds $attemptTimeoutSeconds -IgnoreMessageIds $sentMessageIds -SeenMessageIds $seenMessageIds
+                    $finAck = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Receiver -ExpectedMessageType FIN_ACK -TimeoutSeconds $attemptTimeoutSeconds -IgnoreMessageIds $sentMessageIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId)
                     break
                 }
                 catch {

@@ -1,11 +1,23 @@
 # KlipAround release notes
 
+## 1.0.3
+
+- Hardened protocol validation paths from Phase 1 of the injection remediation plan and added stricter ACK/metadata guardrails.
+- Message IDs now use monotonic UUIDv7 generation with deterministic rollover coverage in tests.
+- Optimized UUIDv7 generation throughput by reusing script-scope RNG state, reducing lock scope, and tightening formatting allocations.
+- Added monotonic-ID-aware protocol fast paths: stale-message watermark checks and bounded seen-message tracking in wait handling.
+- Simplified duplicate-message handling in protocol waits and bounded sender/receiver self-message ID tracking to prevent unbounded growth.
+- Optimized sender/receiver hot paths with lower-overhead timeout/progress/update loops while preserving wire behavior.
+- Reduced protocol wait-loop overhead by centralizing poll backoff jitter generation in a lightweight in-process helper.
+- Refined protocol wait-loop exception scoping by narrowing parse/read try blocks, surfacing listener initialization fallback diagnostics, and rethrowing unexpected envelope-processing exceptions.
+- Release notes metadata links to [RELEASE-NOTES.md for the `1.0.3` Git tag](https://github.com/Synchronos/KlipAround/blob/1.0.3/RELEASE-NOTES.md).
+
 ## 1.0.2
 
 - Receiver FIN-grace waits now use polling-only mode to reduce listener fallback noise while preserving protocol behavior.
 - Added debug ignore-reason diagnostics for self-published, duplicate, and mismatch messages in protocol waits.
 - Improved wait-loop timing reliability by using monotonic stopwatch timeouts (immune to wall-clock jumps) and UTC timestamp generation.
-- Release notes metadata links to [RELEASE-NOTES.md for the `1.0.1` Git tag](https://github.com/Synchronos/KlipAround/blob/1.0.2/RELEASE-NOTES.md).
+- Release notes metadata links to [RELEASE-NOTES.md for the `1.0.2` Git tag](https://github.com/Synchronos/KlipAround/blob/1.0.2/RELEASE-NOTES.md).
 
 ## 1.0.1
 
