@@ -46,7 +46,7 @@ documented as optional hardening rather than a complete security boundary.
 This decision is reflected in:
 
 * Phase status and rollout updates in
-  [protocol-injection-remediation-plan.md](../implementation-plans/protocol-injection-remediation-plan.md)
+  [protocol-injection-remediation-plan.md](../implementation-plans/archive/protocol-injection-remediation-plan.md)
 * Optional auth design and behavior in
   [0016-add-optional-authkey-authentication-mode.md](0016-add-optional-authkey-authentication-mode.md)
 * Protocol and operator guidance in

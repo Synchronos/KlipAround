@@ -2,8 +2,9 @@
 
 ## Purpose
 Close behavior and assertion gaps identified from coverage and source inspection.
-The original 2026-11-23 baseline was **905/1428 lines (63.4%)**. After Phase 1,
-the recorded coverage run measures **1087/1436 lines (75.7%)**. Coverage guides
+The original 2026-11-23 baseline was **905/1428 lines (63.4%)**. Phase 1 measured
+**1087/1436 lines (75.7%)**; the first Phase 2 batch now measures
+**1102/1436 lines (76.7%)**. Coverage guides
 test selection; a high percentage alone does not establish protocol correctness.
 
 ## Scope
@@ -30,8 +31,8 @@ to obtain a passing run.
    Script-level initialization may therefore appear uncovered. Do not remove
    these files from the denominator just to improve the percentage.
 4. **Different units:** JaCoCo reports line/instruction counts; Pester's console
-   summary uses commands. The latest run has **1354/1858 covered commands
-   (72.87%)**, including **504 missed-command CSV records**. CSV commands may
+   summary uses commands. The latest run has **1372/1858 covered commands
+   (73.84%)**, including **486 missed-command CSV records**. CSV commands may
    contain embedded newlines; physical CSV line counts are not command counts.
 5. **No branch measurement:** This XML contains no branch counters. The absence
    of counters means branch coverage is unavailable, not zero or complete.
@@ -42,22 +43,25 @@ to obtain a passing run.
 
 ## Current evidence and status
 Reviewed on **2026-11-24**. The latest retained module reports are:
-- [JaCoCo coverage](../../TestResults/coverage.xml).
-- [Missed commands](../../TestResults/missed-commands.csv).
-- [NUnit3 results](../../TestResults/test-results.xml).
+- [JaCoCo coverage](../../TestResults/phase2-auth/coverage.xml).
+- [Missed commands](../../TestResults/phase2-auth/missed-commands.csv).
+- [NUnit3 results](../../TestResults/phase2-auth/test-results.xml).
 
 These are ignored, replaceable local artifacts, not committed release evidence.
 The full run used **PowerShell 7.7.0 on Windows / Pester 6.2.0**, without filters
 or native-clipboard opt-in.
-The module run spans **2026-11-24 07:49:51Z to 07:54:45Z** and contains
-**97 cases: 92 passed, 0 failed, 5 skipped**. The runner's recorded process exit
-code was **0**. Its five regression tests passed separately; they are not part
-of those 97 module cases.
+The module run spans **2026-11-24 08:32:40Z to 08:37:37Z** and contains
+**105 cases: 100 passed, 0 failed, 5 skipped**. The runner's recorded process exit
+code was **0**. Source state was commit `ff656bd` plus the uncommitted Phase 2
+test changes; no production source changed in this batch.
+The 18 selected auth/discovery/sender cases also passed on both PowerShell 7
+and Windows PowerShell 5.1, with exit code 0. The runner's five regression
+tests passed separately during its implementation and were not rerun here.
 
 | Module source | Covered / total lines | Coverage |
 | --- | ---: | ---: |
-| `Public/Receive-KlipAround.ps1` | 239/351 | 68.1% |
-| `Private/KlipAroundProtocol.ps1` | 288/368 | 78.3% |
+| `Public/Receive-KlipAround.ps1` | 246/351 | 70.1% |
+| `Private/KlipAroundProtocol.ps1` | 296/368 | 80.4% |
 | `Public/Send-KlipAround.ps1` | 276/331 | 83.4% |
 | `Private/Clipboard.ps1` | 48/95 | 50.5% |
 | `Public/Test-KlipAroundPerformance.ps1` | 122/153 | 79.7% |
@@ -65,11 +69,11 @@ of those 97 module cases.
 | `Public/New-KlipAroundBootstrap.ps1` | 59/66 | 89.4% |
 | `Private/Hashing.ps1` | 28/32 | 87.5% |
 | `Public/Test-KlipAroundTransport.ps1` | 27/28 | 96.4% |
-| **Total** | **1087/1436** | **75.7%** |
+| **Total** | **1102/1436** | **76.7%** |
 
 The five skips are two Linux-only stalled-xclip cases and three opt-in native
 Linux display/clipboard cases. Do not count them as passes or assume Windows
-results establish Linux/RDP behavior. The NUnit root says `Skipped` despite 92
+results establish Linux/RDP behavior. The NUnit root says `Skipped` despite 100
 passed cases; interpret case counts and failure records alongside the runner
 exit code, rather than treating that label as "nothing ran."
 
@@ -80,7 +84,7 @@ Do not recreate the legacy report as a prerequisite for further test work.
 | Phase | Current status |
 | --- | --- |
 | 1 | Delivered and validated; residual assertions explicitly carried into Phase 2. |
-| 2 | Not started; reordered below by behavioral risk. |
+| 2 | In progress: auth assertions and sender-test tag separation delivered; receiver recovery and helper work remain. |
 | 3 | Runner, usage documentation, and runner tests implemented; evidence procedure below applies now. |
 | 4 | Classification refined below; platform validation and final disposition remain pending. |
 
@@ -159,6 +163,8 @@ review below distinguishes delivery from remaining assertions.
   assertions. Missing sender nonce at the sender, missing/wrong receiver nonce at
   the receiver, and absent `AuthRequired` are not all directly tested yet.
   Phase 2 carries these forward; Phase 1 delivery is not an all-auth-path sign-off.
+  The Phase 2 kickoff below adds the nonce cases and records existing
+  omitted-flag acceptance without tightening authentication policy.
 
 **Phase 1 implementation notes**
 - Added **10 `It` definitions / 15 expanded cases**: sender state machine and
@@ -186,7 +192,7 @@ review below distinguishes delivery from remaining assertions.
 - Full Pester suite after Phase 1: **92 passed, 0 failed, 5 skipped** (previously 77 passed).
 
 ### Phase 2 — Remaining protocol assertions and focused unit tests
-**Status:** ⬜ Not started
+**Status:** 🟨 In progress (2026-11-24); auth kickoff validated.
 
 **Goal:** Prioritize remaining receiver/auth contracts over inexpensive
 percentage gains. Extend existing tests where practical; do not multiply every
@@ -197,14 +203,13 @@ case across the whole transfer matrix.
      wrong-value case.
    - Receiver: missing and incorrect `AuthReceiverNonce` after a valid HELLO;
      use the correct bound sender nonce so the intended validation is reached.
-   - Authenticated HELLO: add the absent-`AuthRequired` case, separately from
-     existing `false`; rename the existing test to make that distinction clear.
-     Current code checks the value only when the property exists, so absence
-     bypasses that particular check. The original plan expected rejection;
-     resolve that discrepancy against the [protocol contract](../protocol-v2.md)
-     before choosing rejection or documented acceptance. Rejecting currently
-     accepted omissions could affect authenticated-peer compatibility; record
-     that decision and its regression test rather than calling it test-only.
+   - Authenticated HELLO: distinguish omitted `AuthRequired` from explicit
+     `false`. The kickoff preserves existing acceptance of omission when
+     signature/nonces are valid, while explicit `false` still rejects in
+     authenticated mode. Authentication remains opt-in under
+     [MADR 0017](../decisions/0017-decline-auth-required-by-default-evolution.md).
+     That decision does not itself specify the omitted-field rule; no new
+     wire-policy tightening is introduced by this test-improvement batch.
    - Session-less auth discovery: unsigned/invalidly signed HELLO followed by a
      valid signed HELLO, then verify the bound session and echoed nonce context.
      Capture and assert the existing malformed-discovery warning separately.
@@ -253,14 +258,42 @@ case across the whole transfer matrix.
      behavior as a substitute for meaningful protocol tests.
 
 **Test organization**
-- The current `TransferMatrix` parent also tags mocked sender unit tests,
-  including the new state-machine/auth cases. `-ExcludeTagFilter TransferMatrix`
-  therefore removes valuable measured coverage, not just child-runspace tests.
-  Separate mocked sender tests into an untagged group before using that filter
-  as a unit-only shortcut; preserve the real matrix's tags and cases.
+- **Completed in the kickoff:** mocked sender tests now have their own
+  `Mocked sender protocol` group outside the `TransferMatrix` parent. Excluding
+  the matrix no longer excludes these in-process state-machine/auth assertions.
+  The actual transfer matrix retains its tags and cases.
 - Keep fixtures schema-complete (including `MessageType`) and use real signing,
   parsing, and checksum helpers where those contracts are under test. Avoid
   mocks at the very boundary the test claims to validate.
+
+**Phase 2 kickoff delivery**
+- Eight additional expanded cases: missing sender nonce at the sender,
+  missing/changed receiver nonce after HELLO, three signed session-less
+  discovery cases, and two warning-throttling/reset cases.
+- Discovery rejects unsigned or incorrectly signed HELLO before accepting a
+  correctly signed HELLO. Assertions verify the selected session, echoed
+  sender nonce, receiver nonce, and authenticated follow-up wait. A deliberate
+  fixture exception stops immediately after binding; these are not claimed
+  as complete authenticated transfers. The full transfer matrix remains the
+  separate end-to-end regression evidence.
+- The omitted-flag discovery case records compatibility; the explicit-false
+  rejection test was renamed to describe its actual input.
+- The existing unauthenticated malformed-first discovery test now asserts its
+  warning text/count instead of discarding warnings.
+- Real parsing/signature validation and mocked polling establish warnings at
+  invalid counts 1 and 10, reset after valid traffic from another session, and
+  eventual acceptance of the valid intended-session message.
+- Focused validation: **18/0/0** on PowerShell 7 and Windows PowerShell 5.1.
+  The initial 5.1 attempt could not discover Pester; exposing the existing
+  module directory inside that process resolved it without installation.
+- Tag-isolation check: **10/0/0**, exit **0**, for `Mocked sender protocol`
+  with `TransferMatrix` excluded.
+- Full coverage validation: **100/0/5**, exit **0**, **1102/1436 lines (76.7%)**;
+  instruction/command coverage **1372/1858 (73.84%)**, **486** missed commands.
+  An interrupted first attempt was discarded and rerun to completion.
+- Remaining: receiver ordering/corruption/metadata cases (item 2), direct
+  publishing and wire-round-trip tests (item 3), ACK/replay bounds (item 4),
+  and any justified focused nonce-contract test (item 5).
 
 **Phase 2 exit criteria**
 - Listed protocol cases assert externally observable rejection, recovery, or
@@ -282,8 +315,14 @@ matrix and uses no test filters:
 pwsh -NoProfile -File .\Build\Invoke-KlipAroundTests.ps1
 ```
 
-Default outputs are the three `TestResults` artifacts linked above. Preserve
-comparison runs with `-OutputDirectory` rather than overwriting evidence.
+Default outputs are the three report names under `TestResults`. Preserve
+comparison runs with `-OutputDirectory` rather than overwriting evidence;
+the current evidence links above point to the separate `phase2-auth` run:
+
+```powershell
+pwsh -NoProfile -File .\Build\Invoke-KlipAroundTests.ps1 -OutputDirectory .\TestResults\phase2-auth
+```
+
 The runner fails on test/discovery failure, no runnable tests, or absent
 coverage. Its displayed coverage target is informational, not an enforced gate.
 Do not add an arbitrary percentage gate until behavior gaps and platform
@@ -308,8 +347,8 @@ baselines are understood.
    each completed phase. A filtered success is not a full-suite result.
 2. Record PowerShell/Pester versions, operating system, commit plus dirty-tree
    state, exact command/filters, native-clipboard opt-in state, and exit code.
-   This baseline includes uncommitted Phase 1/runner work; do not attribute it
-   solely to the last commit.
+   The Phase 1 baseline predates its commit; the Phase 2 kickoff baseline is
+   `ff656bd` plus uncommitted tests. Do not attribute either solely to a commit.
 3. Record per-case pass/fail/skip counts and reasons, plus JaCoCo totals and
    per-file changes. Update this document's current evidence summary.
 4. Run the separate runner regression suite after runner changes, using the
@@ -328,7 +367,8 @@ and deliberately deferred native checks. Reassess after Phase 2.
 
 | Area | Disposition / next evidence |
 | --- | --- |
-| Receiver ordering, auth, ACK validation, replay bounds | Actionable Phase 2 tests; not accepted gaps. |
+| Receiver ordering, ACK validation, replay bounds | Actionable remaining Phase 2 tests; not accepted gaps. |
+| Auth enforcement/discovery | Kickoff assertions added; preserve opt-in authentication and retain full authenticated transfer regressions. |
 | Module import-time lines | Instrumentation limitation; existing import tests still matter. |
 | Transfer runspaces and benchmark jobs | Measurement limitation, not permission to omit behavioral assertions. |
 | Clipboard wrapper functions | Unit-test routing, missing commands, empty reads, and error propagation with native commands mocked; do not require real clipboard access for these checks. |
@@ -345,7 +385,8 @@ must never be enabled automatically in a shared environment.
 - Auth-enforcement and receiver recovery contracts gain direct positive/negative
   assertions without sacrificing end-to-end transfer coverage.
 - Material uncovered regions have a documented disposition.
-- Coverage changes are measured honestly against the 75.7% current baseline.
+- Coverage changes are measured honestly: Phase 1 was 75.7%; the Phase 2
+  kickoff is 76.7%, with the production line denominator unchanged.
   The earlier roughly-85% forecast was not supported by a line-by-line estimate
   and is withdrawn; behavioral exit criteria govern completion.
 
@@ -366,3 +407,8 @@ must never be enabled automatically in a shared environment.
   Corrected Phase 1 assertion/count claims, recognized the implemented runner,
   reprioritized Phase 2, and refined residual-gap classification. Reports were
   inspected, not regenerated; the legacy summary's deletion was preserved.
+- 2026-11-24: Committed/pushed Phase 1, runner, and plan as `ff656bd`, then
+  began Phase 2. Auth/discovery assertions add eight cases; mocked sender tests
+  are no longer matrix-tagged. MADR 0017 remains in force with no production
+  authentication-policy changes. Full suite **100/0/5**, line coverage
+  **76.7%**, focused tests **18/0/0** on PowerShell 7 and Windows PowerShell 5.1.

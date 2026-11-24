@@ -196,6 +196,62 @@ Describe 'KlipAround envelope and block helpers' {
             $received.MessageId | Should -Be $signed.MessageId
         }
 
+        It 'throttles <InvalidPayload> warnings, resets after valid traffic, and accepts a signed message' -TestCases @(
+            @{ InvalidPayload = 'malformed' }
+            @{ InvalidPayload = 'invalidly signed' }
+        ) {
+            param($InvalidPayload)
+            $sessionId = 'warning-throttle'
+            $script:warningFrames = [System.Collections.Generic.Queue[string]]::new()
+            $script:capturedWarnings = [System.Collections.Generic.List[string]]::new()
+            for ($i = 1; $i -le 11; $i++) {
+                if ($InvalidPayload -eq 'malformed') {
+                    $text = "malformed-envelope-$i"
+                }
+                else {
+                    $message = New-KlipAroundMessage -SessionId $sessionId -Role Sender -MessageType HELLO -Payload @{
+                        AuthRequired = $true; AuthSenderNonce = 'sender-nonce'
+                    }
+                    Set-KlipAroundMessageAuthSignature -Message $message -AuthKey 'wrong-secret'
+                    $text = ConvertTo-KlipAroundEnvelope -Message $message
+                }
+                $script:warningFrames.Enqueue($text)
+            }
+            $rejectedText = $text
+            $otherSession = New-KlipAroundMessage -SessionId 'other-session' -Role Sender -MessageType HELLO -Payload @{
+                AuthRequired = $true; AuthSenderNonce = 'sender-nonce'
+            }
+            Set-KlipAroundMessageAuthSignature -Message $otherSession -AuthKey 'shared-secret'
+            $script:warningFrames.Enqueue((ConvertTo-KlipAroundEnvelope -Message $otherSession))
+            $script:warningFrames.Enqueue($rejectedText)
+            $accepted = New-KlipAroundMessage -SessionId $sessionId -Role Sender -MessageType HELLO -Payload @{
+                AuthRequired = $true; AuthSenderNonce = 'sender-nonce'
+            }
+            Set-KlipAroundMessageAuthSignature -Message $accepted -AuthKey 'shared-secret'
+            $script:warningFrames.Enqueue((ConvertTo-KlipAroundEnvelope -Message $accepted))
+
+            Mock New-KlipAroundClipboardListener { $null }
+            Mock Start-Sleep { }
+            Mock Get-KlipAroundPollJitterMilliseconds { 0 }
+            Mock Get-KlipAroundClipboardText { $script:warningFrames.Dequeue() }
+            Mock Write-Warning {
+                param($Message)
+                [void]$script:capturedWarnings.Add([string]$Message)
+            }
+
+            $received = Wait-KlipAroundMessage -SessionId $sessionId -ExpectedRole Sender -ExpectedMessageType HELLO -TimeoutSeconds 10 -AuthKey 'shared-secret' -RequireAuthentication
+
+            $received.MessageId | Should -Be $accepted.MessageId
+            $kind = if ($InvalidPayload -eq 'malformed') { 'malformed' } else { 'unauthenticated or invalidly signed' }
+            @($script:capturedWarnings.ToArray()) | Should -Be @(
+                "Ignored 1 $kind clipboard payload(s) while waiting for session '$sessionId'."
+                "Ignored 10 $kind clipboard payload(s) while waiting for session '$sessionId'."
+                "Ignored 1 $kind clipboard payload(s) while waiting for session '$sessionId'."
+            )
+            $script:warningFrames.Count | Should -Be 0
+            Should -Invoke Get-KlipAroundClipboardText -Times 14 -Exactly
+        }
+
         It 'rejects replayed authentication digests when replay tracking is configured' {
             $replayed = New-KlipAroundMessage -SessionId 'auth-replay' -Role Sender -MessageType HELLO -Payload @{
                 AuthRequired    = $true
@@ -579,7 +635,7 @@ Describe 'Received file names' {
             Should -Invoke Publish-KlipAroundMessage -Times 0 -Exactly
         }
 
-        It 'rejects an authenticated HELLO that does not set AuthRequired' {
+        It 'rejects an authenticated HELLO with AuthRequired explicitly false' {
             Mock Wait-KlipAroundMessage {
                 return [pscustomobject]@{
                     MessageType = 'HELLO'
@@ -630,6 +686,92 @@ Describe 'Received file names' {
                 Should -Throw '*rebinding attempt detected*'
         }
 
+        It 'rejects a <ReceiverNonce> receiver nonce after an authenticated HELLO' -TestCases @(
+            @{ ReceiverNonce = 'missing' }
+            @{ ReceiverNonce = 'changed' }
+        ) {
+            param($ReceiverNonce)
+            $script:receiverNonceCase = $ReceiverNonce
+            $script:boundReceiverNonce = $null
+            $script:receiverNonceWaitCount = 0
+            Mock Publish-KlipAroundMessage {
+                param($Message)
+                if ($Message.MessageType -eq 'HELLO_ACK') {
+                    $script:boundReceiverNonce = [string]$Message.Payload.AuthReceiverNonce
+                }
+                return $Message
+            }
+            Mock Wait-KlipAroundMessage {
+                $script:receiverNonceWaitCount++
+                if ($script:receiverNonceWaitCount -eq 1) {
+                    return [pscustomobject]@{
+                        MessageType = 'HELLO'
+                        Payload = [pscustomobject]@{
+                            FileCount = 0; BlockSize = 4096; WindowSize = 16
+                            AuthRequired = $true; AuthSenderNonce = 'sender-nonce'
+                        }
+                    }
+                }
+                $payload = @{ FileCount = 0; AuthSenderNonce = 'sender-nonce' }
+                if ($script:receiverNonceCase -eq 'changed') {
+                    $payload.AuthReceiverNonce = $script:boundReceiverNonce + '-changed'
+                }
+                return [pscustomobject]@{ MessageType = 'FIN'; Payload = [pscustomobject]$payload }
+            }
+
+            { Receive-KlipAround -DestinationPath $TestDrive -SessionId 'receiver-nonce' -Force -TimeoutSeconds 1 -AuthKey 'secret' } |
+                Should -Throw '*failed receiver nonce validation*'
+
+            $script:boundReceiverNonce | Should -Not -BeNullOrEmpty
+            Should -Invoke Publish-KlipAroundMessage -Times 1 -Exactly -ParameterFilter { $Message.MessageType -eq 'HELLO_ACK' }
+            Should -Invoke Publish-KlipAroundMessage -Times 0 -Exactly -ParameterFilter { $Message.MessageType -eq 'FIN_ACK' }
+        }
+
+        It 'binds authenticated session-less discovery after <InvalidHello> HELLO with AuthRequired <AuthRequiredField>' -TestCases @(
+            @{ InvalidHello = 'unsigned'; AuthRequiredField = 'present' }
+            @{ InvalidHello = 'invalidly signed'; AuthRequiredField = 'present' }
+            @{ InvalidHello = 'unsigned'; AuthRequiredField = 'omitted' }
+        ) {
+            param($InvalidHello, $AuthRequiredField)
+            $rejected = New-KlipAroundMessage -SessionId 'rejected-session' -Role Sender -MessageType HELLO -Payload @{
+                FileCount = 0; BlockSize = 4096; WindowSize = 16
+                AuthRequired = $true; AuthSenderNonce = 'rejected-nonce'
+            }
+            if ($InvalidHello -eq 'invalidly signed') {
+                Set-KlipAroundMessageAuthSignature -Message $rejected -AuthKey 'wrong-secret'
+            }
+            $payload = @{
+                FileCount = 0; BlockSize = 4096; WindowSize = 16
+                AuthSenderNonce = 'accepted-nonce'
+            }
+            if ($AuthRequiredField -eq 'present') { $payload.AuthRequired = $true }
+            $accepted = New-KlipAroundMessage -SessionId 'authenticated-discovery' -Role Sender -MessageType HELLO -Payload $payload
+            Set-KlipAroundMessageAuthSignature -Message $accepted -AuthKey 'shared-secret'
+            $script:discoveryFrames = [System.Collections.Generic.Queue[string]]::new()
+            $script:discoveryFrames.Enqueue((ConvertTo-KlipAroundEnvelope -Message $rejected))
+            $script:discoveryFrames.Enqueue((ConvertTo-KlipAroundEnvelope -Message $accepted))
+            Mock Get-KlipAroundClipboardText { $script:discoveryFrames.Dequeue() }
+            Mock Start-Sleep { }
+            Mock Publish-KlipAroundMessage { param($Message) return $Message }
+            Mock Wait-KlipAroundMessage { throw 'End of authenticated discovery fixture.' }
+
+            { Receive-KlipAround -DestinationPath $TestDrive -Force -TimeoutSeconds 5 -AuthKey 'shared-secret' } |
+                Should -Throw 'End of authenticated discovery fixture.'
+
+            $script:discoveryFrames.Count | Should -Be 0
+            Should -Invoke Publish-KlipAroundMessage -Times 1 -Exactly
+            Should -Invoke Publish-KlipAroundMessage -Times 1 -Exactly -ParameterFilter {
+                $Message.MessageType -eq 'HELLO_ACK' -and
+                $Message.SessionId -eq 'authenticated-discovery' -and
+                $Message.Payload.AuthSenderNonce -eq 'accepted-nonce' -and
+                -not [string]::IsNullOrWhiteSpace($Message.Payload.AuthReceiverNonce) -and
+                $AuthKey -eq 'shared-secret'
+            }
+            Should -Invoke Wait-KlipAroundMessage -Times 1 -Exactly -ParameterFilter {
+                $SessionId -eq 'authenticated-discovery' -and $RequireAuthentication -and $AuthKey -eq 'shared-secret'
+            }
+        }
+
         It 'discovers the session from an initial HELLO when no SessionId is provided' {
             $helloMessage = New-KlipAroundMessage -SessionId 'discovered-session' -Role Sender -MessageType HELLO -Payload @{ FileCount = 0; BlockSize = 4096; WindowSize = 16 }
             $helloEnvelope = ConvertTo-KlipAroundEnvelope -Message $helloMessage
@@ -653,10 +795,16 @@ Describe 'Received file names' {
                 throw "Timed out waiting for message types 'FIN', 'HELLO' from role 'Sender' in session 'discovered-session'."
             }
 
-            Receive-KlipAround -DestinationPath $TestDrive -Force -TimeoutSeconds 2 3>$null
+            Mock Write-Warning { }
+
+            Receive-KlipAround -DestinationPath $TestDrive -Force -TimeoutSeconds 2
 
             Should -Invoke Publish-KlipAroundMessage -Times 1 -Exactly -ParameterFilter { $Message.MessageType -eq 'HELLO_ACK' -and $Message.SessionId -eq 'discovered-session' }
             Should -Invoke Publish-KlipAroundMessage -Times 1 -Exactly -ParameterFilter { $Message.MessageType -eq 'FIN_ACK' }
+            Should -Invoke Write-Warning -Times 1 -Exactly
+            Should -Invoke Write-Warning -Times 1 -Exactly -ParameterFilter {
+                $Message -eq 'Ignored 1 malformed clipboard payload(s) while waiting for initial HELLO.'
+            }
         }
 
         It 'preserves an existing file when a forced transfer fails verification' {
@@ -1240,7 +1388,9 @@ Describe 'KlipAround clipboard listener' {
                     $senderReady.Dispose()
                 }
             }
+        }
 
+        Describe 'Mocked sender protocol' {
             It 'rejects an empty pipeline without publishing a message' {
                 Mock Publish-KlipAroundMessage { throw 'Unexpected publication.' }
 
@@ -1385,16 +1535,24 @@ Describe 'KlipAround clipboard listener' {
                 Should -Invoke Publish-KlipAroundMessage -Times 2 -Exactly -ParameterFilter { $Message.MessageType -eq 'DATA_BURST' }
             }
 
-            It 'rejects a HELLO_ACK that fails sender nonce validation in authenticated mode' {
+            It 'rejects a HELLO_ACK with a <SenderNonce> sender nonce in authenticated mode' -TestCases @(
+                @{ SenderNonce = 'wrong' }
+                @{ SenderNonce = 'missing' }
+            ) {
+                param($SenderNonce)
                 $path = Join-Path $TestDrive 'auth-send-nonce.bin'
                 [IO.File]::WriteAllBytes($path, [byte[]]@(1, 2))
+                $script:senderNonceCase = $SenderNonce
                 Mock Publish-KlipAroundMessage { param($Message) return $Message }
                 Mock Wait-KlipAroundMessage {
-                    return [pscustomobject]@{ MessageType = 'HELLO_ACK'; Payload = [pscustomobject]@{ Accepted = $true; AuthSenderNonce = 'wrong-nonce'; AuthReceiverNonce = 'receiver-1' } }
+                    $payload = @{ Accepted = $true; AuthReceiverNonce = 'receiver-1' }
+                    if ($script:senderNonceCase -eq 'wrong') { $payload.AuthSenderNonce = 'wrong-nonce' }
+                    return [pscustomobject]@{ MessageType = 'HELLO_ACK'; Payload = [pscustomobject]$payload }
                 }
 
                 { Send-KlipAround -Path $path -SessionId 'auth-send-nonce' -TimeoutSeconds 1 -AuthKey 'secret' } |
                     Should -Throw '*failed sender nonce validation*'
+                Should -Invoke Publish-KlipAroundMessage -Times 0 -Exactly -ParameterFilter { $Message.MessageType -eq 'FILE_META' }
             }
 
             It 'rejects a HELLO_ACK that omits the receiver nonce in authenticated mode' {
