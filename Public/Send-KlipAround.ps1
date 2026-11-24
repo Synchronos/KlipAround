@@ -216,12 +216,18 @@ function Send-KlipAround {
                 return
             }
 
-            $actualSenderNonce = [string]$Message.Payload.AuthSenderNonce
+            $actualSenderNonce = ''
+            if ($Message.Payload.PSObject.Properties.Name -contains 'AuthSenderNonce') {
+                $actualSenderNonce = [string]$Message.Payload.AuthSenderNonce
+            }
             if ([string]::IsNullOrWhiteSpace($actualSenderNonce) -or $actualSenderNonce -ne $senderAuthNonce) {
                 throw "Authenticated message '$($Message.MessageType)' failed sender nonce validation."
             }
 
-            $actualReceiverNonce = [string]$Message.Payload.AuthReceiverNonce
+            $actualReceiverNonce = ''
+            if ($Message.Payload.PSObject.Properties.Name -contains 'AuthReceiverNonce') {
+                $actualReceiverNonce = [string]$Message.Payload.AuthReceiverNonce
+            }
             if ([string]::IsNullOrWhiteSpace($actualReceiverNonce)) {
                 throw "Authenticated message '$($Message.MessageType)' is missing receiver nonce context."
             }

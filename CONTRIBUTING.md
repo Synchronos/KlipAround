@@ -51,6 +51,58 @@ failures. To inspect results interactively instead, leave `Run.Exit` false,
 set `Run.PassThru` to true, and inspect `FailedCount` and `SkippedCount`.
 Do not treat skipped tests as passed evidence.
 
+### Detailed code coverage
+
+From a source checkout, run the [coverage runner](Build/Invoke-KlipAroundTests.ps1)
+in a fresh process with Pester 6.2.0 installed:
+
+```powershell
+pwsh -NoProfile -File .\Build\Invoke-KlipAroundTests.ps1
+# Windows PowerShell 5.1:
+powershell.exe -NoProfile -File .\Build\Invoke-KlipAroundTests.ps1
+```
+
+The runner uses detailed console output (including missed commands) and full
+failure stack traces. It runs the module suite, including the transfer matrix,
+and measures only the module entry point and public/private source scripts;
+build tooling and tests are not included in the coverage denominator.
+Packaging tests remain a separate check below.
+
+Reports are written to the ignored `TestResults` directory:
+
+| Report | Contents |
+| --- | --- |
+| `coverage.xml` | JaCoCo line/instruction coverage by file and method. |
+| `test-results.xml` | NUnit3 test outcomes, including failures and skips. |
+| `missed-commands.csv` | Uncovered commands with file, function, line, and column locations. |
+
+Use `-OutputDirectory` to preserve separate runs; otherwise these reports are
+replaced. `-TagFilter`, `-ExcludeTagFilter`, and `-FullNameFilter` support focused
+runs, for example:
+
+```powershell
+.\Build\Invoke-KlipAroundTests.ps1 -FullNameFilter '*authenticated*' -OutputDirectory .\TestResults\auth
+```
+
+Filtered runs are partial evidence, not full-suite coverage. The runner throws
+on test/discovery failures, no runnable tests, or absent coverage data; with
+`-File`, this gives a nonzero process exit code. Pester's displayed coverage
+target (75% by default) is informational, not an enforced threshold.
+
+Coverage is limited to the instrumented runspace: transfer-matrix child
+runspaces and benchmark jobs are not measured. Import-time initialization may
+also appear uncovered. Pester reports command coverage in the console, which
+can differ from the XML's line percentage; no branch-coverage claim is implied.
+The runner does not enable native clipboard tests; their opt-in requirements
+below still apply.
+
+The runner's own configuration and failure-handling tests are separate from
+the packaged module suite:
+
+```powershell
+Invoke-Pester -Path .\Build\Invoke-KlipAroundTests.Tests.ps1 -CI
+```
+
 In PowerShell 7, also run the CI analysis and packaging checks:
 
 ```powershell

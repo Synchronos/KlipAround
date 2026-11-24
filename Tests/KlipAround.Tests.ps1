@@ -333,6 +333,28 @@ Describe 'KlipAround envelope and block helpers' {
                 Should -Throw '*exceeds allowed maximum*'
         }
 
+        It 'rejects malformed data blocks (<Case>)' -TestCases @(
+            @{ Case = 'checksum mismatch' }
+            @{ Case = 'byte length mismatch' }
+            @{ Case = 'invalid declared length' }
+            @{ Case = 'checksum algorithm mismatch' }
+            @{ Case = 'missing checksum value' }
+            @{ Case = 'oversized encoded payload' }
+        ) {
+            param($Case)
+            $block = [pscustomobject](New-KlipAroundDataBlock -Sequence 0 -Bytes ([byte[]]@(1, 2, 3)) -ChecksumAlgorithm CRC32C)
+            $expand = { Expand-KlipAroundDataBlock -Block $block -ExpectedChecksumAlgorithm CRC32C }
+            switch ($Case) {
+                'checksum mismatch' { $block.Checksum = 'deadbeef'; $expected = '*checksum mismatch*' }
+                'byte length mismatch' { $block.Length = 5; $expected = '*byte length mismatch*' }
+                'invalid declared length' { $block.Length = 'abc'; $expected = '*invalid declared byte length*' }
+                'checksum algorithm mismatch' { $expand = { Expand-KlipAroundDataBlock -Block $block -ExpectedChecksumAlgorithm SHA256 }; $expected = '*checksum algorithm mismatch*' }
+                'missing checksum value' { $block.Checksum = ''; $expected = '*missing checksum value*' }
+                'oversized encoded payload' { $block.Data = 'A' * 64; $block.Length = 10; $expand = { Expand-KlipAroundDataBlock -Block $block -MaximumLength 16 }; $expected = '*encoded payload exceeds allowed maximum size*' }
+            }
+            $expand | Should -Throw $expected
+        }
+
         It 'matches CRC32C check values on cold and cached tables' {
             $script:KlipAroundCrc32cTable = $null
             $vectors = @(
@@ -555,6 +577,86 @@ Describe 'Received file names' {
             { Receive-KlipAround -DestinationPath $TestDrive -SessionId 'mixed-mode' -Force -TimeoutSeconds 1 } |
                 Should -Throw '*requires authentication*not configured with -AuthKey*'
             Should -Invoke Publish-KlipAroundMessage -Times 0 -Exactly
+        }
+
+        It 'rejects an authenticated HELLO that does not set AuthRequired' {
+            Mock Wait-KlipAroundMessage {
+                return [pscustomobject]@{
+                    MessageType = 'HELLO'
+                    Payload = [pscustomobject]@{ FileCount = 1; BlockSize = 4096; WindowSize = 16; AuthRequired = $false; AuthSenderNonce = 'nonce-one' }
+                }
+            }
+            Mock Publish-KlipAroundMessage { param($Message) return $Message }
+
+            { Receive-KlipAround -DestinationPath $TestDrive -SessionId 'auth-recv-flag' -Force -TimeoutSeconds 1 -AuthKey 'secret' } |
+                Should -Throw '*AuthRequired=true*'
+        }
+
+        It 'rejects an authenticated HELLO that is missing the sender nonce' {
+            Mock Wait-KlipAroundMessage {
+                return [pscustomobject]@{
+                    MessageType = 'HELLO'
+                    Payload = [pscustomobject]@{ FileCount = 1; BlockSize = 4096; WindowSize = 16; AuthRequired = $true }
+                }
+            }
+            Mock Publish-KlipAroundMessage { param($Message) return $Message }
+
+            { Receive-KlipAround -DestinationPath $TestDrive -SessionId 'auth-recv-nonce' -Force -TimeoutSeconds 1 -AuthKey 'secret' } |
+                Should -Throw '*missing sender nonce context*'
+        }
+
+        It 'rejects a sender nonce rebinding attempt after session binding' {
+            $script:rebindWaitCount = 0
+            Mock Wait-KlipAroundMessage {
+                $script:rebindWaitCount++
+                if ($script:rebindWaitCount -eq 1) {
+                    return [pscustomobject]@{
+                        MessageType = 'HELLO'
+                        Payload = [pscustomobject]@{ FileCount = 1; BlockSize = 4096; WindowSize = 16; AuthRequired = $true; AuthSenderNonce = 'nonce-one' }
+                    }
+                }
+                return [pscustomobject]@{
+                    MessageType = 'FILE_META'
+                    Payload = [pscustomobject]@{
+                        FileIndex = 0; Name = 'rebind.bin'; Length = 1; Sha256 = ''
+                        BlockSize = 4096; TotalBlocks = 1; BlockChecksumAlgorithm = 'SHA256'
+                        AuthSenderNonce = 'nonce-two'; AuthReceiverNonce = 'receiver-1'
+                    }
+                }
+            }
+            Mock Publish-KlipAroundMessage { param($Message) return $Message }
+
+            { Receive-KlipAround -DestinationPath $TestDrive -SessionId 'auth-recv-rebind' -Force -TimeoutSeconds 1 -AuthKey 'secret' } |
+                Should -Throw '*rebinding attempt detected*'
+        }
+
+        It 'discovers the session from an initial HELLO when no SessionId is provided' {
+            $helloMessage = New-KlipAroundMessage -SessionId 'discovered-session' -Role Sender -MessageType HELLO -Payload @{ FileCount = 0; BlockSize = 4096; WindowSize = 16 }
+            $helloEnvelope = ConvertTo-KlipAroundEnvelope -Message $helloMessage
+            $script:sessionlessReads = 0
+            $script:sessionlessWaits = 0
+            Mock Get-KlipAroundClipboardText {
+                $script:sessionlessReads++
+                if ($script:sessionlessReads -eq 1) { return 'not-a-kliparound-envelope' }
+                return $helloEnvelope
+            }
+            Mock Start-Sleep { }
+            Mock Publish-KlipAroundMessage { param($Message) return $Message }
+            Mock Wait-KlipAroundMessage {
+                $script:sessionlessWaits++
+                if ($script:sessionlessWaits -eq 1) {
+                    return [pscustomobject]@{
+                        MessageType = 'FIN'
+                        Payload = [pscustomobject]@{ FileCount = 0; AckGraceSeconds = 3 }
+                    }
+                }
+                throw "Timed out waiting for message types 'FIN', 'HELLO' from role 'Sender' in session 'discovered-session'."
+            }
+
+            Receive-KlipAround -DestinationPath $TestDrive -Force -TimeoutSeconds 2 3>$null
+
+            Should -Invoke Publish-KlipAroundMessage -Times 1 -Exactly -ParameterFilter { $Message.MessageType -eq 'HELLO_ACK' -and $Message.SessionId -eq 'discovered-session' }
+            Should -Invoke Publish-KlipAroundMessage -Times 1 -Exactly -ParameterFilter { $Message.MessageType -eq 'FIN_ACK' }
         }
 
         It 'preserves an existing file when a forced transfer fails verification' {
@@ -1203,6 +1305,133 @@ Describe 'KlipAround clipboard listener' {
 
                 { Send-KlipAround -Path $path -TimeoutSeconds 1 -MaxRetries 1 } |
                     Should -Throw '*out of bounds*'
+            }
+
+            It 'completes a mocked transfer with SREJ resend and reports results' {
+                $path = Join-Path $TestDrive 'sender-state-machine.bin'
+                $bytes = New-Object byte[] 8292
+                for ($i = 0; $i -lt $bytes.Length; $i++) { $bytes[$i] = $i % 251 }
+                [IO.File]::WriteAllBytes($path, $bytes)
+
+                $script:senderPublished = [System.Collections.Generic.List[hashtable]]::new()
+                $script:senderAckCount = 0
+                Mock Publish-KlipAroundMessage {
+                    param($Message)
+                    [void]$script:senderPublished.Add($Message)
+                    return $Message
+                }
+                Mock Wait-KlipAroundMessage {
+                    if ($ExpectedMessageType -eq 'HELLO_ACK') {
+                        return [pscustomobject]@{ Payload = [pscustomobject]@{ Accepted = $true } }
+                    }
+                    if ($ExpectedMessageType -eq 'FILE_META_ACK') {
+                        return [pscustomobject]@{ Payload = [pscustomobject]@{ FileIndex = 0 } }
+                    }
+                    if ($ExpectedMessageType -eq 'ACK_REPORT') {
+                        $script:senderAckCount++
+                        switch ($script:senderAckCount) {
+                            1 { return [pscustomobject]@{ Payload = [pscustomobject]@{ FileIndex = 0; AckNextSeq = 1; TotalBlocks = 3; MissingSeqs = @(1) } } }
+                            2 { return [pscustomobject]@{ Payload = [pscustomobject]@{ FileIndex = 0; AckNextSeq = 2; TotalBlocks = 3; MissingSeqs = @() } } }
+                            default { return [pscustomobject]@{ Payload = [pscustomobject]@{ FileIndex = 0; AckNextSeq = 3; TotalBlocks = 3; MissingSeqs = @() } } }
+                        }
+                    }
+                    if ($ExpectedMessageType -eq 'FILE_EOF_ACK') {
+                        return [pscustomobject]@{ Payload = [pscustomobject]@{ FileIndex = 0; Accepted = $true } }
+                    }
+                    if ($ExpectedMessageType -eq 'FIN_ACK') {
+                        return [pscustomobject]@{ Payload = [pscustomobject]@{ ReceivedFiles = 1 } }
+                    }
+                    throw "Unexpected wait for message type '$ExpectedMessageType'."
+                }
+
+                $result = Send-KlipAround -Path $path -SessionId 'sender-sm' -BlockSize 4096 -WindowSize 2 -TimeoutSeconds 5 -PassThru
+
+                $types = @($script:senderPublished | ForEach-Object { $_.MessageType })
+                $types | Should -Be @('HELLO', 'FILE_META', 'DATA_BURST', 'DATA_BURST', 'DATA_BURST', 'FILE_EOF', 'FIN')
+
+                $bursts = @($script:senderPublished | Where-Object { $_.MessageType -eq 'DATA_BURST' })
+                $bursts[0].Payload.StartSeq | Should -Be 0
+                @($bursts[0].Payload.Blocks).Count | Should -Be 2
+                $bursts[1].Payload.StartSeq | Should -Be 1
+                @($bursts[1].Payload.Blocks).Count | Should -Be 1
+                @($bursts[1].Payload.Blocks)[0].Seq | Should -Be 1
+                $bursts[2].Payload.StartSeq | Should -Be 2
+                @($bursts[2].Payload.Blocks)[0].Seq | Should -Be 2
+
+                $result.FileCount | Should -Be 1
+                $result.Files[0].Blocks | Should -Be 3
+                $result.Files[0].Sha256 | Should -Be (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            }
+
+            It 'resends a DATA_BURST after an ACK_REPORT wait timeout and completes' {
+                $path = Join-Path $TestDrive 'sender-retry.bin'
+                [IO.File]::WriteAllBytes($path, [byte[]](1..100))
+                $script:retryAckCalls = 0
+                Mock Publish-KlipAroundMessage { param($Message) return $Message }
+                Mock Wait-KlipAroundMessage {
+                    if ($ExpectedMessageType -eq 'HELLO_ACK') { return [pscustomobject]@{ Payload = [pscustomobject]@{ Accepted = $true } } }
+                    if ($ExpectedMessageType -eq 'FILE_META_ACK') { return [pscustomobject]@{ Payload = [pscustomobject]@{ FileIndex = 0 } } }
+                    if ($ExpectedMessageType -eq 'ACK_REPORT') {
+                        $script:retryAckCalls++
+                        if ($script:retryAckCalls -eq 1) { throw "Timed out waiting for message types 'ACK_REPORT'." }
+                        return [pscustomobject]@{ Payload = [pscustomobject]@{ FileIndex = 0; AckNextSeq = 1; TotalBlocks = 1; MissingSeqs = @() } }
+                    }
+                    if ($ExpectedMessageType -eq 'FILE_EOF_ACK') { return [pscustomobject]@{ Payload = [pscustomobject]@{ FileIndex = 0 } } }
+                    if ($ExpectedMessageType -eq 'FIN_ACK') { return [pscustomobject]@{ Payload = [pscustomobject]@{ ReceivedFiles = 1 } } }
+                    throw "Unexpected wait for message type '$ExpectedMessageType'."
+                }
+
+                { Send-KlipAround -Path $path -SessionId 'sender-retry' -TimeoutSeconds 4 -MaxRetries 2 } | Should -Not -Throw
+                Should -Invoke Publish-KlipAroundMessage -Times 2 -Exactly -ParameterFilter { $Message.MessageType -eq 'DATA_BURST' }
+            }
+
+            It 'rejects a HELLO_ACK that fails sender nonce validation in authenticated mode' {
+                $path = Join-Path $TestDrive 'auth-send-nonce.bin'
+                [IO.File]::WriteAllBytes($path, [byte[]]@(1, 2))
+                Mock Publish-KlipAroundMessage { param($Message) return $Message }
+                Mock Wait-KlipAroundMessage {
+                    return [pscustomobject]@{ MessageType = 'HELLO_ACK'; Payload = [pscustomobject]@{ Accepted = $true; AuthSenderNonce = 'wrong-nonce'; AuthReceiverNonce = 'receiver-1' } }
+                }
+
+                { Send-KlipAround -Path $path -SessionId 'auth-send-nonce' -TimeoutSeconds 1 -AuthKey 'secret' } |
+                    Should -Throw '*failed sender nonce validation*'
+            }
+
+            It 'rejects a HELLO_ACK that omits the receiver nonce in authenticated mode' {
+                $path = Join-Path $TestDrive 'auth-send-recv-missing.bin'
+                [IO.File]::WriteAllBytes($path, [byte[]]@(1, 2))
+                $script:senderHelloNonce = $null
+                Mock Publish-KlipAroundMessage {
+                    param($Message)
+                    if ($Message.MessageType -eq 'HELLO') { $script:senderHelloNonce = [string]$Message.Payload.AuthSenderNonce }
+                    return $Message
+                }
+                Mock Wait-KlipAroundMessage {
+                    return [pscustomobject]@{ MessageType = 'HELLO_ACK'; Payload = [pscustomobject]@{ Accepted = $true; AuthSenderNonce = $script:senderHelloNonce } }
+                }
+
+                { Send-KlipAround -Path $path -SessionId 'auth-send-recv-missing' -TimeoutSeconds 1 -AuthKey 'secret' } |
+                    Should -Throw '*missing receiver nonce context*'
+            }
+
+            It 'rejects a receiver nonce change after session binding in authenticated mode' {
+                $path = Join-Path $TestDrive 'auth-send-recv-change.bin'
+                [IO.File]::WriteAllBytes($path, [byte[]]@(1, 2))
+                $script:senderHelloNonce2 = $null
+                Mock Publish-KlipAroundMessage {
+                    param($Message)
+                    if ($Message.MessageType -eq 'HELLO') { $script:senderHelloNonce2 = [string]$Message.Payload.AuthSenderNonce }
+                    return $Message
+                }
+                Mock Wait-KlipAroundMessage {
+                    if ($ExpectedMessageType -eq 'HELLO_ACK') {
+                        return [pscustomobject]@{ MessageType = 'HELLO_ACK'; Payload = [pscustomobject]@{ Accepted = $true; AuthSenderNonce = $script:senderHelloNonce2; AuthReceiverNonce = 'receiver-1' } }
+                    }
+                    return [pscustomobject]@{ MessageType = 'FILE_META_ACK'; Payload = [pscustomobject]@{ FileIndex = 0; AuthSenderNonce = $script:senderHelloNonce2; AuthReceiverNonce = 'receiver-2' } }
+                }
+
+                { Send-KlipAround -Path $path -SessionId 'auth-send-recv-change' -TimeoutSeconds 1 -AuthKey 'secret' } |
+                    Should -Throw '*failed receiver nonce validation*'
             }
         }
     }

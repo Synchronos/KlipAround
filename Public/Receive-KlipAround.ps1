@@ -133,7 +133,10 @@ function Receive-KlipAround {
             throw "Authenticated mode requires HELLO payload to set AuthRequired=true."
         }
 
-        $actualSenderNonce = [string]$Message.Payload.AuthSenderNonce
+        $actualSenderNonce = ''
+        if ($Message.Payload.PSObject.Properties.Name -contains 'AuthSenderNonce') {
+            $actualSenderNonce = [string]$Message.Payload.AuthSenderNonce
+        }
         if ([string]::IsNullOrWhiteSpace($actualSenderNonce)) {
             throw "Authenticated message '$($Message.MessageType)' is missing sender nonce context."
         }
@@ -145,7 +148,10 @@ function Receive-KlipAround {
         }
 
         if ($Message.MessageType -ne 'HELLO') {
-            $actualReceiverNonce = [string]$Message.Payload.AuthReceiverNonce
+            $actualReceiverNonce = ''
+            if ($Message.Payload.PSObject.Properties.Name -contains 'AuthReceiverNonce') {
+                $actualReceiverNonce = [string]$Message.Payload.AuthReceiverNonce
+            }
             if ([string]::IsNullOrWhiteSpace($actualReceiverNonce) -or $actualReceiverNonce -ne $receiverAuthNonce) {
                 throw "Authenticated message '$($Message.MessageType)' failed receiver nonce validation."
             }
