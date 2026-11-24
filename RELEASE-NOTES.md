@@ -11,6 +11,9 @@
 - Reduced protocol wait-loop overhead by centralizing poll backoff jitter generation in a lightweight in-process helper.
 - Refined protocol wait-loop exception scoping by narrowing parse/read try blocks, surfacing listener initialization fallback diagnostics, and rethrowing unexpected envelope-processing exceptions.
 - Implemented opt-in authenticated mode (`-AuthKey`) with per-message HMAC signatures, nonce-bound session context, deterministic mixed-mode rejection behavior, and replay-digest filtering in wait handling.
+- Hardened authenticated digest stability by canonicalizing payload object shapes consistently and normalizing `TimestampUtc` canonicalization so signatures remain valid across envelope parse round-trips.
+- Final validation after authenticated-mode fixes: full Pester suite **71 passed, 0 failed, 5 skipped**.
+- Decision tracking and roadmap state for auth evolution are captured in ADRs [0016](docs/decisions/0016-add-optional-authkey-authentication-mode.md) and [0017](docs/decisions/0017-decline-auth-required-by-default-evolution.md); implementation/decision updates were pushed in commit `d654356` with release tag intentionally deferred.
 - Release notes metadata links to [RELEASE-NOTES.md for the `1.0.3` Git tag](https://github.com/Synchronos/KlipAround/blob/1.0.3/RELEASE-NOTES.md).
 
 ## 1.0.2

@@ -82,6 +82,7 @@ Files expected to change:
 - Added authenticated nonce binding (`AuthSenderNonce`, `AuthReceiverNonce`) with first-HELLO session binding checks and rebinding rejection.
 - Added replay rejection support in message waits via bounded authentication-digest tracking.
 - Added authenticated helper tests for valid signatures, tamper detection, unsigned-message rejection when auth is required, and replay-digest rejection.
+- Stabilized auth digest canonicalization across hashtable/PSCustomObject payload shapes and normalized `TimestampUtc` canonicalization to avoid signature drift after envelope round-trip parsing.
 
 **Phase 2 compatibility behavior**
 - If both endpoints specify the same `-AuthKey`, authenticated mode is enforced for all control/data messages.
@@ -93,6 +94,9 @@ Files expected to change:
 1. Authenticated mode rejects forged/tampered/replayed messages across HELLO, metadata, data, ACK, EOF, and FIN flows.
 2. Mixed-mode behavior is deterministic and documented (auth-required, auth-optional, unauthenticated peers).
 3. Sender/receiver interoperability tests pass for valid authenticated transfers and expected negative paths.
+
+**Phase 2 validation evidence**
+- Full Pester suite after Phase 2 auth fixes: **71 passed, 0 failed, 5 skipped**.
 
 ### Phase 3 — Secure-by-default protocol evolution
 **Status:** ❌ Declined (2026-11-23)
