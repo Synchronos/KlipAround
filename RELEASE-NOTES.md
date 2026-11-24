@@ -1,7 +1,18 @@
 # KlipAround release notes
 
+## 1.0.4
+
+- Fixed authenticated-mode session nonce binding: sender/receiver nonce captures now persist correctly across validation scriptblock scopes, restoring full authenticated transfers.
+- Fixed auth digest canonicalization failures for payloads containing null-valued fields and generic enumerable block collections (e.g. `DATA_BURST` blocks).
+- Fixed intermittent authenticated signature rejections caused by nondeterministic timestamp canonicalization: parsed `[datetime]` values now canonicalize to the exact 7-digit `'o'` UTC string form used at signing time, eliminating trailing-zero-tick signature drift (~10% of messages previously failed verification and relied on retries).
+- Added regression tests for null-field, enumerable-payload, and trailing-zero-timestamp canonicalization.
+- Added authenticated end-to-end transfer coverage: `Authenticated` and `DropFinalAckAuth` (retry-under-auth) cases in the transfer matrix, plus a mixed-mode rejection test for auth-required senders against unconfigured receivers.
+- Quick 10MB local benchmark (BlockSize 128KB, Window 16, CRC32C): 9.11s unauthenticated vs 10.44s with `-AuthKey` (~15% send-path overhead).
+- Release notes metadata links to [RELEASE-NOTES.md for the `1.0.4` Git tag](https://github.com/Synchronos/KlipAround/blob/1.0.4/RELEASE-NOTES.md).
+
 ## 1.0.3
 
+- `1.0.3` was manually unlisted from PowerShell Gallery after publication; this tag remains the historical source snapshot for that package.
 - Hardened protocol validation paths from Phase 1 of the injection remediation plan and added stricter ACK/metadata guardrails.
 - Message IDs now use monotonic UUIDv7 generation with deterministic rollover coverage in tests.
 - Optimized UUIDv7 generation throughput by reusing script-scope RNG state, reducing lock scope, and tightening formatting allocations.

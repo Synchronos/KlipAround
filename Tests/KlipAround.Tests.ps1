@@ -113,6 +113,49 @@ Describe 'KlipAround envelope and block helpers' {
             (Test-KlipAroundMessageAuthSignature -Message $message -AuthKey 'wrong-secret') | Should -BeFalse
         }
 
+        It 'supports authenticated payload canonicalization when payload fields contain null values' {
+            $message = New-KlipAroundMessage -SessionId 'auth-null' -Role Sender -MessageType FILE_META -Payload @{
+                FileIndex       = 0
+                Name            = 'null-field.bin'
+                Length          = 16
+                TotalBlocks     = 1
+                BlockSize       = 16
+                OptionalField   = $null
+                AuthSenderNonce = 'sender-nonce'
+            }
+
+            { Set-KlipAroundMessageAuthSignature -Message $message -AuthKey 'shared-secret' } | Should -Not -Throw
+            (Test-KlipAroundMessageAuthSignature -Message $message -AuthKey 'shared-secret') | Should -BeTrue
+        }
+
+        It 'supports authenticated payload canonicalization for generic enumerable block payloads' {
+            $blocks = [System.Collections.Generic.List[hashtable]]::new()
+            [void]$blocks.Add([ordered]@{ Seq = 0; Data = 'AAA=' })
+            [void]$blocks.Add([ordered]@{ Seq = 1; Data = 'BBB=' })
+            $message = New-KlipAroundMessage -SessionId 'auth-enum' -Role Sender -MessageType DATA_BURST -Payload @{
+                FileIndex       = 0
+                StartSeq        = 0
+                Blocks          = $blocks
+                AuthSenderNonce = 'sender-nonce'
+            }
+
+            { Set-KlipAroundMessageAuthSignature -Message $message -AuthKey 'shared-secret' } | Should -Not -Throw
+            (Test-KlipAroundMessageAuthSignature -Message $message -AuthKey 'shared-secret') | Should -BeTrue
+        }
+
+        It 'keeps auth signatures valid when timestamps have trailing-zero ticks after round-trip parsing' {
+            $message = New-KlipAroundMessage -SessionId 'auth-ts' -Role Sender -MessageType HELLO -Payload @{
+                AuthRequired    = $true
+                AuthSenderNonce = 'sender-nonce'
+                StartedUtc      = '2026-01-01T00:00:00.1200000Z'
+            }
+            $message.TimestampUtc = '2026-01-01T00:00:00.4500000Z'
+            Set-KlipAroundMessageAuthSignature -Message $message -AuthKey 'shared-secret'
+
+            $parsed = ConvertFrom-KlipAroundEnvelope -Text (ConvertTo-KlipAroundEnvelope -Message $message)
+            (Test-KlipAroundMessageAuthSignature -Message $parsed -AuthKey 'shared-secret') | Should -BeTrue
+        }
+
         It 'detects tampered authenticated messages' {
             $message = New-KlipAroundMessage -SessionId 'auth-2' -Role Sender -MessageType FILE_META -Payload @{
                 FileIndex       = 0
@@ -500,6 +543,20 @@ Describe 'Received file names' {
             Should -Invoke Publish-KlipAroundMessage -Times 1 -Exactly
         }
 
+        It 'rejects an auth-required HELLO when the receiver has no AuthKey' {
+            Mock Wait-KlipAroundMessage {
+                return [pscustomobject]@{
+                    MessageType = 'HELLO'
+                    Payload = [pscustomobject]@{ FileCount = 1; BlockSize = 4096; WindowSize = 16; AuthRequired = $true }
+                }
+            }
+            Mock Publish-KlipAroundMessage { param($Message) return $Message }
+
+            { Receive-KlipAround -DestinationPath $TestDrive -SessionId 'mixed-mode' -Force -TimeoutSeconds 1 } |
+                Should -Throw '*requires authentication*not configured with -AuthKey*'
+            Should -Invoke Publish-KlipAroundMessage -Times 0 -Exactly
+        }
+
         It 'preserves an existing file when a forced transfer fails verification' {
             $target = Join-Path $TestDrive 'existing.bin'
             [IO.File]::WriteAllText($target, 'original')
@@ -866,6 +923,8 @@ Describe 'KlipAround clipboard listener' {
                 @{ InputMode = 'DropFirstAckShort'; Algorithm = 'SHA256'; PrecomputeHash = $false }
                 @{ InputMode = 'DropFinalAckShort'; Algorithm = 'SHA256'; PrecomputeHash = $false }
                 @{ InputMode = 'DropFinAck'; Algorithm = 'SHA256'; PrecomputeHash = $false }
+                @{ InputMode = 'Authenticated'; Algorithm = 'SHA256'; PrecomputeHash = $false }
+                @{ InputMode = 'DropFinalAckAuth'; Algorithm = 'SHA256'; PrecomputeHash = $false }
             ) {
                 param($InputMode, $Algorithm, $PrecomputeHash)
 
@@ -942,7 +1001,8 @@ Describe 'KlipAround clipboard listener' {
                         } $Clipboard $InputMode $Ready $IsSender
                     }
 
-                    $timeout = if ($InputMode -like '*Short') { 1 } elseif ($InputMode -like 'Drop*') { 8 } else { 15 }
+                    $timeout = if ($InputMode -like '*Short') { 1 } elseif ($InputMode -like 'Drop*Auth') { 15 } elseif ($InputMode -like 'Drop*') { 8 } else { 15 }
+                    $authKey = if ($InputMode -eq 'Authenticated' -or $InputMode -like '*Auth') { 'matrix-shared-auth-key' } else { $null }
                     if ($IsSender) {
                         $SenderReady.Set()
                         if (-not $Ready.Wait(10000)) { throw 'Receiver did not become ready.' }
@@ -954,6 +1014,9 @@ Describe 'KlipAround clipboard listener' {
                             BlockChecksumAlgorithm = $Algorithm
                             PrecomputeHash = $PrecomputeHash
                             PassThru = $true
+                        }
+                        if ($authKey) {
+                            $sendParameters.AuthKey = $authKey
                         }
                         switch ($InputMode) {
                             'Parameter' {
@@ -988,6 +1051,9 @@ Describe 'KlipAround clipboard listener' {
                             'NativeLinuxClipboard' {
                                 ($Paths + $Paths[0]) | Send-KlipAround @sendParameters
                             }
+                            'Authenticated' {
+                                Send-KlipAround -Path $Paths @sendParameters
+                            }
                             { $_ -like 'Drop*' } {
                                 Send-KlipAround -Path $Paths @sendParameters
                             }
@@ -997,7 +1063,17 @@ Describe 'KlipAround clipboard listener' {
                     else {
                         if (-not $SenderReady.Wait(10000)) { throw 'Sender did not initialize.' }
                         if ($InputMode -eq 'NativeLinuxClipboard') { $Ready.Set() }
-                        Receive-KlipAround -DestinationPath $Destination -SessionId $SessionId -TimeoutSeconds $timeout -Force:($InputMode -eq 'ForceReplace') -PassThru
+                        $receiveParameters = @{
+                            DestinationPath = $Destination
+                            SessionId = $SessionId
+                            TimeoutSeconds = $timeout
+                            Force = ($InputMode -eq 'ForceReplace')
+                            PassThru = $true
+                        }
+                        if ($authKey) {
+                            $receiveParameters.AuthKey = $authKey
+                        }
+                        Receive-KlipAround @receiveParameters
                     }
                 }
 

@@ -138,7 +138,7 @@ function Receive-KlipAround {
             throw "Authenticated message '$($Message.MessageType)' is missing sender nonce context."
         }
         if ([string]::IsNullOrWhiteSpace($senderAuthNonce)) {
-            $senderAuthNonce = $actualSenderNonce
+            Set-Variable -Name senderAuthNonce -Value $actualSenderNonce -Scope 1
         }
         elseif ($actualSenderNonce -ne $senderAuthNonce) {
             throw "Authenticated sender nonce rebinding attempt detected for session '$SessionId'."

@@ -151,6 +151,7 @@ function Get-KlipAroundCanonicalJsonNode {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Returns an in-memory canonicalized JSON node.') ]
     param(
         [Parameter(Mandatory)]
+        [AllowNull()]
         $Value
     )
 
@@ -158,11 +159,18 @@ function Get-KlipAroundCanonicalJsonNode {
         return $null
     }
 
+    if ($Value -is [datetime]) {
+        return $Value.ToUniversalTime().ToString('o')
+    }
+
+    if ($Value -is [datetimeoffset]) {
+        return $Value.UtcDateTime.ToString('o')
+    }
+
     if ($Value -is [string] -or $Value -is [bool] -or $Value -is [byte] -or $Value -is [sbyte] -or
         $Value -is [int16] -or $Value -is [uint16] -or $Value -is [int] -or $Value -is [uint32] -or
         $Value -is [int64] -or $Value -is [uint64] -or $Value -is [single] -or $Value -is [double] -or
-        $Value -is [decimal] -or $Value -is [datetime] -or $Value -is [datetimeoffset] -or
-        $Value -is [guid]) {
+        $Value -is [decimal] -or $Value -is [guid]) {
         return $Value
     }
 
@@ -193,7 +201,7 @@ function Get-KlipAroundCanonicalJsonNode {
         foreach ($item in $Value) {
             [void]$nodes.Add((Get-KlipAroundCanonicalJsonNode -Value $item))
         }
-        return @($nodes)
+        return $nodes.ToArray()
     }
 
     return [string]$Value

@@ -226,7 +226,7 @@ function Send-KlipAround {
                 throw "Authenticated message '$($Message.MessageType)' is missing receiver nonce context."
             }
             if ([string]::IsNullOrWhiteSpace($receiverAuthNonce)) {
-                $receiverAuthNonce = $actualReceiverNonce
+                Set-Variable -Name receiverAuthNonce -Value $actualReceiverNonce -Scope 1
             }
             elseif ($actualReceiverNonce -ne $receiverAuthNonce) {
                 throw "Authenticated message '$($Message.MessageType)' failed receiver nonce validation."
