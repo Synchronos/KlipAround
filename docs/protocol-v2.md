@@ -13,10 +13,11 @@ Two concurrently running endpoints take turns replacing and reading a shared
 text clipboard. There is no queue, socket, or retained message history.
 Clipboard redirection, if needed, is external to KlipAround.
 
-Both endpoints must speak v2. There is no v1 negotiation or fallback, peer
-authentication, encryption, or persistent resume state. Use only trusted peers
-and a trusted clipboard channel. A session ID filters traffic; it is not an
-authorization token.
+Both endpoints must speak v2. There is no v1 negotiation or fallback,
+encryption, or persistent resume state. Authenticated mode is optional via
+`-AuthKey`; unauthenticated mode remains supported for compatibility. Use only
+trusted peers and a trusted clipboard channel when unauthenticated mode is in
+use. A session ID filters traffic; it is not an authorization token.
 
 ## Framing and envelope
 
@@ -44,6 +45,14 @@ the envelope.
 | `MessageId` | New UUIDv7 string for each publication | Duplicate and self-message filtering. Retries use new IDs. |
 | `TimestampUtc` | UTC round-trip-format string | Diagnostic timestamp; not a replay deadline or ordering guarantee. |
 | `Payload` | JSON object | Message-specific data. |
+
+When authenticated mode is enabled, each message payload includes
+`Payload.Auth` with:
+
+| Field | Meaning |
+| --- | --- |
+| `Algorithm` | Always `HMACSHA256` in current implementation. |
+| `Signature` | HMAC over canonicalized envelope fields (`Protocol`, `SessionId`, `Role`, `MessageType`, `MessageId`, `TimestampUtc`, and `Payload`) excluding `Payload.Auth.Signature` itself. |
 
 The envelope parser is not a complete schema validator. Transfer commands still
 perform message-specific validation and now reject oversized envelopes and
@@ -75,6 +84,31 @@ progress, and validates matching file indexes on file acknowledgments. The
 receiver validates received file length against `FILE_META.Length`, not
 `FILE_EOF.Length`, and uses the hello count for progress rather than enforcing
 a final count match.
+
+### Authenticated mode (`-AuthKey`)
+
+When both endpoints provide `-AuthKey`, the protocol enforces signature
+validation on every accepted message.
+
+Authenticated sessions also bind nonce context:
+
+| Field | Direction | Meaning |
+| --- | --- | --- |
+| `AuthRequired` | `HELLO` | Sender indicates authenticated mode is required for the session. |
+| `AuthSenderNonce` | Sender → Receiver | Sender nonce selected at session start and required on authenticated sender messages. |
+| `AuthReceiverNonce` | Receiver → Sender | Receiver nonce selected at session start and required on authenticated receiver messages and on authenticated sender messages after hello acknowledgment. |
+
+Deterministic mixed-mode behavior:
+
+* If the receiver runs without `-AuthKey` but receives `HELLO` with
+  `AuthRequired: true`, it rejects the session.
+* If the receiver requires authentication (`-AuthKey`) and sender messages are
+  unsigned/invalid, the receiver rejects them and does not progress protocol
+  state.
+* If keys differ, signatures fail validation and transfer does not progress.
+
+Replay protection in authenticated waits uses bounded digest history. Replayed
+authentication digests within the configured window are rejected.
 
 ### Data blocks and checksums
 

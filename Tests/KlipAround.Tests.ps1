@@ -105,6 +105,84 @@ Describe 'KlipAround envelope and block helpers' {
             }
         }
 
+        It 'signs and validates protocol messages in authenticated mode' {
+            $message = New-KlipAroundMessage -SessionId 'auth-1' -Role Sender -MessageType HELLO -Payload @{ AuthRequired = $true; AuthSenderNonce = 'sender-nonce' }
+            Set-KlipAroundMessageAuthSignature -Message $message -AuthKey 'shared-secret'
+
+            (Test-KlipAroundMessageAuthSignature -Message $message -AuthKey 'shared-secret') | Should -BeTrue
+            (Test-KlipAroundMessageAuthSignature -Message $message -AuthKey 'wrong-secret') | Should -BeFalse
+        }
+
+        It 'detects tampered authenticated messages' {
+            $message = New-KlipAroundMessage -SessionId 'auth-2' -Role Sender -MessageType FILE_META -Payload @{
+                FileIndex       = 0
+                Name            = 'sample.bin'
+                Length          = 16
+                TotalBlocks     = 1
+                BlockSize       = 16
+                AuthSenderNonce = 'sender-nonce'
+            }
+            Set-KlipAroundMessageAuthSignature -Message $message -AuthKey 'shared-secret'
+            $message.Payload.Name = 'tampered.bin'
+
+            (Test-KlipAroundMessageAuthSignature -Message $message -AuthKey 'shared-secret') | Should -BeFalse
+        }
+
+        It 'rejects unsigned messages when authentication is required' {
+            $unsigned = New-KlipAroundMessage -SessionId 'auth-required' -Role Sender -MessageType HELLO -Payload @{
+                AuthRequired    = $true
+                AuthSenderNonce = 'nonce-a'
+            }
+            $signed = New-KlipAroundMessage -SessionId 'auth-required' -Role Sender -MessageType HELLO -Payload @{
+                AuthRequired    = $true
+                AuthSenderNonce = 'nonce-a'
+            }
+            Set-KlipAroundMessageAuthSignature -Message $signed -AuthKey 'shared-secret'
+
+            $script:authRequiredMessages = @($unsigned, $signed)
+            $script:authRequiredIndex = 0
+            Mock New-KlipAroundClipboardListener { $null }
+            Mock Start-Sleep { }
+            Mock Get-KlipAroundClipboardText {
+                $message = $script:authRequiredMessages[$script:authRequiredIndex]
+                $script:authRequiredIndex++
+                return ConvertTo-KlipAroundEnvelope -Message $message
+            }
+
+            $received = Wait-KlipAroundMessage -SessionId 'auth-required' -ExpectedRole Sender -ExpectedMessageType HELLO -TimeoutSeconds 1 -AuthKey 'shared-secret' -RequireAuthentication
+            $received.MessageId | Should -Be $signed.MessageId
+        }
+
+        It 'rejects replayed authentication digests when replay tracking is configured' {
+            $replayed = New-KlipAroundMessage -SessionId 'auth-replay' -Role Sender -MessageType HELLO -Payload @{
+                AuthRequired    = $true
+                AuthSenderNonce = 'nonce-a'
+            }
+            $accepted = New-KlipAroundMessage -SessionId 'auth-replay' -Role Sender -MessageType HELLO -Payload @{
+                AuthRequired    = $true
+                AuthSenderNonce = 'nonce-a'
+            }
+            Set-KlipAroundMessageAuthSignature -Message $replayed -AuthKey 'shared-secret'
+            Set-KlipAroundMessageAuthSignature -Message $accepted -AuthKey 'shared-secret'
+
+            $seenAuthDigests = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            $seenAuthDigestOrder = New-Object 'System.Collections.Generic.Queue[string]'
+            [void]$seenAuthDigests.Add((Get-KlipAroundAuthSignature -Message $replayed))
+
+            $script:authReplayMessages = @($replayed, $accepted)
+            $script:authReplayIndex = 0
+            Mock New-KlipAroundClipboardListener { $null }
+            Mock Start-Sleep { }
+            Mock Get-KlipAroundClipboardText {
+                $message = $script:authReplayMessages[$script:authReplayIndex]
+                $script:authReplayIndex++
+                return ConvertTo-KlipAroundEnvelope -Message $message
+            }
+
+            $received = Wait-KlipAroundMessage -SessionId 'auth-replay' -ExpectedRole Sender -ExpectedMessageType HELLO -TimeoutSeconds 1 -AuthKey 'shared-secret' -RequireAuthentication -SeenAuthDigests $seenAuthDigests -SeenAuthDigestOrder $seenAuthDigestOrder
+            $received.MessageId | Should -Be $accepted.MessageId
+        }
+
         It 'ignores sent and previously seen message IDs' {
             $ignoredMessage = New-KlipAroundMessage -SessionId 'dedup' -Role Sender -MessageType HELLO
             $seenMessage = New-KlipAroundMessage -SessionId 'dedup' -Role Sender -MessageType HELLO

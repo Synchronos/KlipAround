@@ -9,7 +9,8 @@ Use this guide with the [command help](../README.md#get-help-topics) and
   important elsewhere first, stop unrelated transfers, and avoid copying text
   while a transfer runs. A probe cannot restore the previous clipboard.
 * Use trusted endpoints and a trusted clipboard connection. Base64 is not
-  encryption; session IDs and checksums do not authenticate the other endpoint.
+  encryption. Session IDs and checksums do not authenticate the other endpoint
+  unless both sides are configured with `-AuthKey`.
 * Start with `-Verbose`. `-Debug` can expose file contents and host/user metadata
   in raw envelopes. Do not post raw debug logs without reviewing and redacting
   them. Use a disposable, non-sensitive test file for diagnosis.
@@ -56,6 +57,8 @@ in both directions. That manual check also replaces clipboard contents.
 | --- | --- | --- |
 | Timeout waiting for initial `HELLO` or `HELLO_ACK` | Are both commands running in clipboard-connected sessions? Is clipboard redirection enabled? Do explicit session IDs match? | Stop the failed attempt. Verify sharing in both directions, then start the receiver followed promptly by the sender. Increase timeouts on both sides only if the connection works but is slow. |
 | Timeout waiting for `FILE_META_ACK`, `ACK_REPORT`, or `FILE_EOF_ACK` | Look at the other endpoint's first error; it may have rejected a filename, an existing target, or a filesystem operation. Also check clipboard size limits and competing writes. | Fix the peer error first. For size-sensitive links, try a smaller block and window. Do not treat more retries as a fix for a broken clipboard connection. |
+| Authenticated transfer does not progress | Verify both sides were started with `-AuthKey` and that key values match exactly (including whitespace). Confirm both commands use the same session ID if explicitly set. | Restart both sides with matching `-AuthKey` values. If one side intentionally runs unauthenticated, remove `-AuthKey` from both sides for that transfer. |
+| Receiver reports authentication required or sender reports rejected authenticated context | One side requires authenticated mode (`AuthRequired`) while the peer is running unauthenticated, or nonce-binding validation failed due to mixed state/replay. | Restart both endpoints for a fresh session and ensure both sides either use matching `-AuthKey` values or both omit `-AuthKey`. Do not reuse stale clipboard traffic from prior runs. |
 | Listener startup, failure, or no-signal verbose message | The Windows listener may be unavailable or may not report changes. | Polling fallback is intentional. Continue if progress resumes; if it still times out, check actual clipboard sharing. There is no public switch to force listener mode. FIN-grace follow-up waits already use polling-only mode and report a lower-noise verbose message instead of listener fallback chatter. |
 | Commands stall in a VS Code terminal | Identify whether this is a local terminal, the PowerShell extension's Integrated Console, or a remote terminal, and which desktop clipboard it can access. | Keep transfer commands in separate concurrently running sessions. Compare with a standalone PowerShell process in the same desktop session. A terminal's copy/paste UI does not itself establish shared OS clipboard access between hosts. |
 | `Set-Clipboard` or `Get-Clipboard` unavailable | Check that the command is running in a supported Windows PowerShell environment, or Linux PowerShell 7 with `xclip`. | Use a supported runtime and platform prerequisites. Do not substitute an in-memory clipboard: it cannot connect separate processes. |

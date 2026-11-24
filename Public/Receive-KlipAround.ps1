@@ -20,6 +20,10 @@ Replace existing destination files after the received content has been verified.
 .PARAMETER SessionId
 Optional specific session id to receive. If omitted, accepts the first HELLO and binds to it.
 
+.PARAMETER AuthKey
+Optional shared authentication key. When provided, receiver requires signed messages
+and enforces authenticated nonce context.
+
 .PARAMETER PassThru
 Returns written files.
 #>
@@ -39,6 +43,9 @@ function Receive-KlipAround {
 
         [Parameter()]
         [string]$SessionId,
+
+        [Parameter()]
+        [string]$AuthKey,
 
         [Parameter()]
         [switch]$PassThru
@@ -85,8 +92,64 @@ function Receive-KlipAround {
             [int]$PublishTimeoutSeconds
         )
 
-        $publishedMessage = Publish-KlipAroundMessage -Message $Message -TimeoutSeconds $PublishTimeoutSeconds
+        if ($authEnabled) {
+            if ($null -eq $Message.Payload) {
+                $Message.Payload = @{}
+            }
+            if ($Message.Payload -isnot [System.Collections.IDictionary]) {
+                throw "Authenticated mode requires dictionary payloads for message type '$($Message.MessageType)'."
+            }
+            if (-not [string]::IsNullOrWhiteSpace($senderAuthNonce)) {
+                $Message.Payload.AuthSenderNonce = $senderAuthNonce
+            }
+            if (-not [string]::IsNullOrWhiteSpace($receiverAuthNonce)) {
+                $Message.Payload.AuthReceiverNonce = $receiverAuthNonce
+            }
+        }
+
+        $publishedMessage = Publish-KlipAroundMessage -Message $Message -TimeoutSeconds $PublishTimeoutSeconds -AuthKey $AuthKey
         & $trackSentId $publishedMessage.MessageId
+    }
+    $authEnabled = -not [string]::IsNullOrWhiteSpace($AuthKey)
+    $senderAuthNonce = $null
+    $receiverAuthNonce = if ($authEnabled) { New-KlipAroundAuthNonce } else { $null }
+    $seenAuthDigests = if ($authEnabled) { [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal) } else { $null }
+    $seenAuthDigestOrder = if ($authEnabled) { New-Object 'System.Collections.Generic.Queue[string]' } else { $null }
+    $seenAuthDigestsMaxCount = 4096
+    $assertAuthenticatedSenderMessage = {
+        param(
+            [Parameter(Mandatory)]
+            $Message
+        )
+
+        if (-not $authEnabled) {
+            if ($Message.Payload.PSObject.Properties.Name -contains 'AuthRequired' -and $Message.Payload.AuthRequired -eq $true) {
+                throw "Sender requires authentication for session '$SessionId', but receiver is not configured with -AuthKey."
+            }
+            return
+        }
+
+        if ($Message.Payload.PSObject.Properties.Name -contains 'AuthRequired' -and $Message.Payload.AuthRequired -ne $true -and $Message.MessageType -eq 'HELLO') {
+            throw "Authenticated mode requires HELLO payload to set AuthRequired=true."
+        }
+
+        $actualSenderNonce = [string]$Message.Payload.AuthSenderNonce
+        if ([string]::IsNullOrWhiteSpace($actualSenderNonce)) {
+            throw "Authenticated message '$($Message.MessageType)' is missing sender nonce context."
+        }
+        if ([string]::IsNullOrWhiteSpace($senderAuthNonce)) {
+            $senderAuthNonce = $actualSenderNonce
+        }
+        elseif ($actualSenderNonce -ne $senderAuthNonce) {
+            throw "Authenticated sender nonce rebinding attempt detected for session '$SessionId'."
+        }
+
+        if ($Message.MessageType -ne 'HELLO') {
+            $actualReceiverNonce = [string]$Message.Payload.AuthReceiverNonce
+            if ([string]::IsNullOrWhiteSpace($actualReceiverNonce) -or $actualReceiverNonce -ne $receiverAuthNonce) {
+                throw "Authenticated message '$($Message.MessageType)' failed receiver nonce validation."
+            }
+        }
     }
 
     try {
@@ -113,6 +176,11 @@ function Receive-KlipAround {
                     Write-KlipAroundDebugEnvelope -Direction Receive -Text $text
                     $malformedHelloCount = 0
                     if ($msg.Role -eq 'Sender' -and $msg.MessageType -eq 'HELLO') {
+                        if ($authEnabled -and -not (Test-KlipAroundMessageAuthSignature -Message $msg -AuthKey $AuthKey)) {
+                            Start-Sleep -Milliseconds 250
+                            continue
+                        }
+                        & $assertAuthenticatedSenderMessage $msg
                         $helloAny = $msg
                         break
                     }
@@ -138,8 +206,9 @@ function Receive-KlipAround {
             $hello = $helloAny
         }
         else {
-            $hello = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType HELLO -TimeoutSeconds $TimeoutSeconds -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId)
+            $hello = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType HELLO -TimeoutSeconds $TimeoutSeconds -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId) -AuthKey $AuthKey -RequireAuthentication:$authEnabled -SeenAuthDigests $seenAuthDigests -SeenAuthDigestOrder $seenAuthDigestOrder -SeenAuthDigestsMaxCount $seenAuthDigestsMaxCount
         }
+        & $assertAuthenticatedSenderMessage $hello
 
         $expectedFileCount = [int]$hello.Payload.FileCount
         if ($expectedFileCount -lt 0) {
@@ -168,7 +237,8 @@ function Receive-KlipAround {
         $done = $false
         $dataWaitSeconds = [Math]::Min(3600, $TimeoutSeconds + 1)
         while (-not $done) {
-            $next = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType @('HELLO', 'FILE_META', 'FILE_EOF', 'FIN') -TimeoutSeconds $TimeoutSeconds -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId)
+            $next = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType @('HELLO', 'FILE_META', 'FILE_EOF', 'FIN') -TimeoutSeconds $TimeoutSeconds -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId) -AuthKey $AuthKey -RequireAuthentication:$authEnabled -SeenAuthDigests $seenAuthDigests -SeenAuthDigestOrder $seenAuthDigestOrder -SeenAuthDigestsMaxCount $seenAuthDigestsMaxCount
+            & $assertAuthenticatedSenderMessage $next
             if ($next.MessageType -eq 'HELLO') {
                 $helloAck = New-KlipAroundMessage -SessionId $SessionId -Role Receiver -MessageType HELLO_ACK -Payload @{
                     Accepted = $true
@@ -197,7 +267,7 @@ function Receive-KlipAround {
                 $graceTimeoutMilliseconds = $finAckGraceSeconds * 1000
                 while ($graceStopwatch.ElapsedMilliseconds -lt $graceTimeoutMilliseconds) {
                     try {
-                        $followUp = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType @('FIN', 'HELLO') -TimeoutSeconds 2 -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId) -DisableClipboardListener
+                        $followUp = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType @('FIN', 'HELLO') -TimeoutSeconds 2 -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId) -DisableClipboardListener -AuthKey $AuthKey -RequireAuthentication:$authEnabled -SeenAuthDigests $seenAuthDigests -SeenAuthDigestOrder $seenAuthDigestOrder -SeenAuthDigestsMaxCount $seenAuthDigestsMaxCount
                     }
                     catch {
                         $isWaitTimeout = $_.Exception.Message -like "Timed out waiting for message types*"
@@ -206,6 +276,7 @@ function Receive-KlipAround {
                         }
                         throw
                     }
+                    & $assertAuthenticatedSenderMessage $followUp
 
                     if ($followUp.MessageType -eq 'HELLO') {
                         $helloAck = New-KlipAroundMessage -SessionId $SessionId -Role Receiver -MessageType HELLO_ACK -Payload @{
@@ -313,7 +384,8 @@ function Receive-KlipAround {
                 $outOfOrderBlocks = [System.Collections.Generic.Dictionary[int,byte[]]]::new($expectedWindowSize)
                 $lastFileProgressPercent = -1
                 while ($expectedSeq -lt $totalBlocks) {
-                    $burst = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType @('DATA_BURST', 'HELLO', 'FILE_META') -TimeoutSeconds $dataWaitSeconds -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId)
+                    $burst = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType @('DATA_BURST', 'HELLO', 'FILE_META') -TimeoutSeconds $dataWaitSeconds -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId) -AuthKey $AuthKey -RequireAuthentication:$authEnabled -SeenAuthDigests $seenAuthDigests -SeenAuthDigestOrder $seenAuthDigestOrder -SeenAuthDigestsMaxCount $seenAuthDigestsMaxCount
+                    & $assertAuthenticatedSenderMessage $burst
                     if ($burst.MessageType -eq 'HELLO') {
                         $helloAck = New-KlipAroundMessage -SessionId $SessionId -Role Receiver -MessageType HELLO_ACK -Payload @{
                             Accepted = $true
@@ -450,7 +522,8 @@ function Receive-KlipAround {
             }
 
             do {
-                $eof = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType @('FILE_EOF', 'DATA_BURST') -TimeoutSeconds $dataWaitSeconds -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId)
+                $eof = Wait-KlipAroundMessage -SessionId $SessionId -ExpectedRole Sender -ExpectedMessageType @('FILE_EOF', 'DATA_BURST') -TimeoutSeconds $dataWaitSeconds -IgnoreMessageIds $sentIds -SeenMessageIds $seenMessageIds -SeenMessageIdOrder $seenMessageIdOrder -LastAcceptedMessageId ([ref]$lastAcceptedMessageId) -AuthKey $AuthKey -RequireAuthentication:$authEnabled -SeenAuthDigests $seenAuthDigests -SeenAuthDigestOrder $seenAuthDigestOrder -SeenAuthDigestsMaxCount $seenAuthDigestsMaxCount
+                & $assertAuthenticatedSenderMessage $eof
                 if ($eof.MessageType -eq 'DATA_BURST') {
                     if ([int]$eof.Payload.FileIndex -ne $fileIndex) {
                         throw "Received DATA_BURST for file index $($eof.Payload.FileIndex), expected $fileIndex."

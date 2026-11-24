@@ -55,6 +55,8 @@ Files expected to change:
 - Full Pester suite after Phase 1 and UUIDv7 hardening updates: **65 passed, 0 failed, 5 skipped**.
 
 ### Phase 2 — Authenticated mode (opt-in)
+**Status:** ✅ Completed (2026-11-23)
+
 **Goal:** Add cryptographic message authenticity while preserving compatibility path.
 
 1. **Shared-key auth design**
@@ -74,13 +76,37 @@ Files expected to change:
    - Document mixed-mode behavior and expected failures.
    - Provide operator guidance for key distribution and rotation.
 
+**Phase 2 implementation notes**
+- Added optional `-AuthKey` to `Send-KlipAround` and `Receive-KlipAround`.
+- Added per-message HMAC-SHA256 signatures over canonicalized envelope fields (excluding signature field).
+- Added authenticated nonce binding (`AuthSenderNonce`, `AuthReceiverNonce`) with first-HELLO session binding checks and rebinding rejection.
+- Added replay rejection support in message waits via bounded authentication-digest tracking.
+- Added authenticated helper tests for valid signatures, tamper detection, unsigned-message rejection when auth is required, and replay-digest rejection.
+
+**Phase 2 compatibility behavior**
+- If both endpoints specify the same `-AuthKey`, authenticated mode is enforced for all control/data messages.
+- If sender requires auth but receiver does not specify `-AuthKey`, the receiver rejects the authenticated hello requirement.
+- If receiver requires auth but sender omits `-AuthKey`, the receiver rejects unsigned sender messages.
+- Mismatched keys produce signature validation failures and no state progression.
+
 **Phase 2 acceptance criteria**
 1. Authenticated mode rejects forged/tampered/replayed messages across HELLO, metadata, data, ACK, EOF, and FIN flows.
 2. Mixed-mode behavior is deterministic and documented (auth-required, auth-optional, unauthenticated peers).
 3. Sender/receiver interoperability tests pass for valid authenticated transfers and expected negative paths.
 
 ### Phase 3 — Secure-by-default protocol evolution
-**Goal:** Move to secure defaults with explicit legacy opt-out.
+**Status:** ❌ Declined (2026-11-23)
+
+**Decision summary:** Do not make authenticated mode the default.
+
+**Rationale:** Adversarial clipboard injection is expected to be rare in the
+target operating environments, and a compromised/shared clipboard channel is
+treated as an unsafe environment. `-AuthKey` provides optional integrity and
+session-binding hardening, but does not make an unsafe clipboard channel safe.
+Given this threat model, forcing authenticated mode by default is not justified
+for the current protocol revision.
+
+**Goal (declined):** Move to secure defaults with explicit legacy opt-out.
 
 1. Define next protocol revision behavior:
    - Auth required by default.
@@ -113,7 +139,8 @@ Files expected to change:
 ## Rollout sequence
 1. Implement and ship Phase 1 first (low compatibility risk).
 2. Implement Phase 2 behind opt-in flag; gather usage feedback.
-3. Promote authenticated mode to default in next protocol revision (Phase 3).
+3. Keep authenticated mode opt-in for current protocol revision; do not promote
+   to auth-required-by-default.
 
 ## Exit criteria
 Phase completion requires:
@@ -125,9 +152,11 @@ Phase completion requires:
 1. Canonicalization format for HMAC input (stable JSON vs explicit field concatenation).
 2. Key material format and secure storage guidance for `-AuthKey` (environment variable, secret store, or file-based input policy).
 3. Whether to support key identifiers/rotation in-band in protocol messages.
-4. Exact compatibility contract and timeline for deprecating unauthenticated mode.
+4. Future revisitation criteria for auth-required-by-default behavior (if threat
+   model or deployment assumptions materially change).
 5. Replay window bounds and nonce persistence strategy across process restarts.
 
 ## Related architectural decisions
 - [0014: Enforce fail-closed protocol validation guardrails](../decisions/0014-enforce-fail-closed-protocol-validation-guardrails.md)
 - [0015: Use monotonic UUIDv7 message IDs](../decisions/0015-use-monotonic-uuidv7-message-ids.md)
+- [0016: Add optional `-AuthKey` authenticated protocol mode](../decisions/0016-add-optional-authkey-authentication-mode.md)

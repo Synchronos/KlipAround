@@ -16,6 +16,7 @@ $script:KlipAroundUuid7MaxRandA = 0x0FFF
 $script:KlipAroundUuid7MaxRandB = 0x3FFFFFFFFFFFFFFF
 $script:KlipAroundPollJitterLock = [object]::new()
 $script:KlipAroundPollJitterRng = [System.Random]::new()
+$script:KlipAroundAuthAlgorithm = 'HMACSHA256'
 
 function Get-KlipAroundPollJitterMilliseconds {
     [CmdletBinding()]
@@ -124,6 +125,225 @@ function New-KlipAroundMessage {
     }
 }
 
+function New-KlipAroundAuthNonce {
+    [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Generates an in-memory nonce value.') ]
+    param(
+        [Parameter()]
+        [ValidateRange(8, 64)]
+        [int]$ByteLength = 16
+    )
+
+    $bytes = New-Object byte[] $ByteLength
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $rng.GetBytes($bytes)
+    }
+    finally {
+        $rng.Dispose()
+    }
+
+    return [Convert]::ToBase64String($bytes)
+}
+
+function Get-KlipAroundCanonicalJsonNode {
+    [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Returns an in-memory canonicalized JSON node.') ]
+    param(
+        [Parameter(Mandatory)]
+        $Value
+    )
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    if ($Value -is [string] -or $Value -is [bool] -or $Value -is [byte] -or $Value -is [sbyte] -or
+        $Value -is [int16] -or $Value -is [uint16] -or $Value -is [int] -or $Value -is [uint32] -or
+        $Value -is [int64] -or $Value -is [uint64] -or $Value -is [single] -or $Value -is [double] -or
+        $Value -is [decimal] -or $Value -is [datetime] -or $Value -is [datetimeoffset] -or
+        $Value -is [guid]) {
+        return $Value
+    }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        $ordered = [ordered]@{}
+        $keys = @($Value.Keys | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+        foreach ($key in $keys) {
+            $ordered[$key] = Get-KlipAroundCanonicalJsonNode -Value $Value[$key]
+        }
+        return $ordered
+    }
+
+    if ($Value -is [psobject]) {
+        $propertyNames = @($Value.PSObject.Properties.Name | Sort-Object -Unique)
+        if ($propertyNames.Count -eq 0) {
+            return [string]$Value
+        }
+
+        $ordered = [ordered]@{}
+        foreach ($key in $propertyNames) {
+            $ordered[$key] = Get-KlipAroundCanonicalJsonNode -Value $Value.$key
+        }
+        return $ordered
+    }
+
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+        $nodes = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($item in $Value) {
+            [void]$nodes.Add((Get-KlipAroundCanonicalJsonNode -Value $item))
+        }
+        return @($nodes)
+    }
+
+    return [string]$Value
+}
+
+function Get-KlipAroundAuthSignature {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNull()]
+        $Message
+    )
+
+    if ($null -eq $Message.Payload) {
+        return $null
+    }
+
+    $authNode = $null
+    if ($Message.Payload -is [System.Collections.IDictionary]) {
+        if ($Message.Payload.Contains('Auth')) {
+            $authNode = $Message.Payload['Auth']
+        }
+    }
+    elseif ($Message.Payload.PSObject.Properties.Name -contains 'Auth') {
+        $authNode = $Message.Payload.Auth
+    }
+
+    if ($null -eq $authNode) {
+        return $null
+    }
+
+    if ($authNode -is [System.Collections.IDictionary]) {
+        if ($authNode.Contains('Signature')) {
+            return [string]$authNode['Signature']
+        }
+        return $null
+    }
+
+    if ($authNode.PSObject.Properties.Name -contains 'Signature') {
+        return [string]$authNode.Signature
+    }
+
+    return $null
+}
+
+function Get-KlipAroundMessageAuthDigestHex {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNull()]
+        $Message,
+
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]$AuthKey
+    )
+
+    $payloadCanonical = Get-KlipAroundCanonicalJsonNode -Value $Message.Payload
+    if ($payloadCanonical -is [System.Collections.IDictionary] -and $payloadCanonical.Contains('Auth')) {
+        $authCanonical = $payloadCanonical['Auth']
+        if ($authCanonical -is [System.Collections.IDictionary]) {
+            [void]$authCanonical.Remove('Signature')
+            if (@($authCanonical.Keys).Count -eq 0) {
+                [void]$payloadCanonical.Remove('Auth')
+            }
+        }
+    }
+
+    $canonicalMessage = [ordered]@{
+        Protocol     = [string]$Message.Protocol
+        SessionId    = [string]$Message.SessionId
+        Role         = [string]$Message.Role
+        MessageType  = [string]$Message.MessageType
+        MessageId    = [string]$Message.MessageId
+        TimestampUtc = Get-KlipAroundCanonicalJsonNode -Value $Message.TimestampUtc
+        Payload      = $payloadCanonical
+    }
+    $canonicalJson = (Get-KlipAroundCanonicalJsonNode -Value $canonicalMessage) | ConvertTo-Json -Depth 50 -Compress
+    $keyBytes = [Text.Encoding]::UTF8.GetBytes($AuthKey)
+    $messageBytes = [Text.Encoding]::UTF8.GetBytes($canonicalJson)
+    $hmac = [System.Security.Cryptography.HMACSHA256]::new($keyBytes)
+    try {
+        $digest = $hmac.ComputeHash($messageBytes)
+    }
+    finally {
+        $hmac.Dispose()
+    }
+
+    return -join ($digest | ForEach-Object { $_.ToString('x2') })
+}
+
+function Set-KlipAroundMessageAuthSignature {
+    [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Adds in-memory signature metadata to a protocol message.') ]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNull()]
+        [hashtable]$Message,
+
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]$AuthKey
+    )
+
+    if ($null -eq $Message.Payload) {
+        $Message.Payload = @{}
+    }
+
+    if ($Message.Payload -isnot [System.Collections.IDictionary]) {
+        throw 'Protocol message payload must be dictionary-like for authentication metadata.'
+    }
+
+    if (-not $Message.Payload.Contains('Auth') -or $Message.Payload.Auth -isnot [System.Collections.IDictionary]) {
+        $Message.Payload.Auth = [ordered]@{}
+    }
+
+    $authNode = $Message.Payload.Auth
+    $authNode['Algorithm'] = $script:KlipAroundAuthAlgorithm
+    $authNode['Signature'] = Get-KlipAroundMessageAuthDigestHex -Message $Message -AuthKey $AuthKey
+}
+
+function Test-KlipAroundMessageAuthSignature {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNull()]
+        $Message,
+
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]$AuthKey
+    )
+
+    $signature = Get-KlipAroundAuthSignature -Message $Message
+    if ([string]::IsNullOrWhiteSpace($signature)) {
+        return $false
+    }
+
+    $algorithm = $null
+    if ($null -ne $Message.Payload -and $null -ne $Message.Payload.Auth) {
+        $algorithm = [string]$Message.Payload.Auth.Algorithm
+    }
+    if ($algorithm -ne $script:KlipAroundAuthAlgorithm) {
+        return $false
+    }
+
+    $expected = Get-KlipAroundMessageAuthDigestHex -Message $Message -AuthKey $AuthKey
+    return [string]::Equals($signature, $expected, [StringComparison]::OrdinalIgnoreCase)
+}
+
 function ConvertTo-KlipAroundEnvelope {
     [CmdletBinding()]
     param(
@@ -206,8 +426,15 @@ function Publish-KlipAroundMessage {
 
         [Parameter()]
         [ValidateRange(1, 3600)]
-        [int]$TimeoutSeconds = 60
+        [int]$TimeoutSeconds = 60,
+
+        [Parameter()]
+        [string]$AuthKey
     )
+
+    if (-not [string]::IsNullOrWhiteSpace($AuthKey)) {
+        Set-KlipAroundMessageAuthSignature -Message $Message -AuthKey $AuthKey
+    }
 
     $envelope = ConvertTo-KlipAroundEnvelope -Message $Message
     Write-KlipAroundDebugEnvelope -Direction Send -Text $envelope
@@ -257,8 +484,28 @@ function Wait-KlipAroundMessage {
         [ref]$LastAcceptedMessageId,
 
         [Parameter()]
-        [switch]$DisableClipboardListener
+        [switch]$DisableClipboardListener,
+
+        [Parameter()]
+        [string]$AuthKey,
+
+        [Parameter()]
+        [switch]$RequireAuthentication,
+
+        [Parameter()]
+        [System.Collections.Generic.HashSet[string]]$SeenAuthDigests,
+
+        [Parameter()]
+        [System.Collections.Generic.Queue[string]]$SeenAuthDigestOrder,
+
+        [Parameter()]
+        [ValidateRange(1, 500000)]
+        [int]$SeenAuthDigestsMaxCount = 4096
     )
+
+    if ($RequireAuthentication -and [string]::IsNullOrWhiteSpace($AuthKey)) {
+        throw 'Authentication is required but no AuthKey was provided.'
+    }
 
     $timeoutMilliseconds = [double]$TimeoutSeconds * 1000
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -275,6 +522,7 @@ function Wait-KlipAroundMessage {
     $maxListenerTimeoutStreak = 8
     $readClipboardImmediately = $true
     $invalidEnvelopeCount = 0
+    $invalidAuthCount = 0
     $invokePollingBackoff = {
         param([double]$Factor = 1.2)
         if (-not $useClipboardListener) {
@@ -378,6 +626,37 @@ function Wait-KlipAroundMessage {
 
             Write-KlipAroundDebugEnvelope -Direction Receive -Text $text
             $invalidEnvelopeCount = 0
+
+            if ($RequireAuthentication) {
+                if (-not (Test-KlipAroundMessageAuthSignature -Message $msg -AuthKey $AuthKey)) {
+                    $invalidAuthCount++
+                    if ($invalidAuthCount -eq 1 -or ($invalidAuthCount % 10) -eq 0) {
+                        Write-Warning "Ignored $invalidAuthCount unauthenticated or invalidly signed clipboard payload(s) while waiting for session '$SessionId'."
+                    }
+                    & $invokePollingBackoff 1.25
+                    continue
+                }
+
+                $invalidAuthCount = 0
+
+                if ($null -ne $SeenAuthDigests) {
+                    $authDigest = [string](Get-KlipAroundAuthSignature -Message $msg)
+                    if ($SeenAuthDigests.Contains($authDigest)) {
+                        if ($emitDebug) {
+                            Write-Debug ("[Receive] Ignoring message id '{0}': replayed authentication digest." -f [string]$msg.MessageId)
+                        }
+                        & $invokePollingBackoff 1.2
+                        continue
+                    }
+                    if ($SeenAuthDigests.Add($authDigest) -and $null -ne $SeenAuthDigestOrder) {
+                        $SeenAuthDigestOrder.Enqueue($authDigest)
+                        while ($SeenAuthDigestOrder.Count -gt $SeenAuthDigestsMaxCount) {
+                            $expiredAuthDigest = $SeenAuthDigestOrder.Dequeue()
+                            [void]$SeenAuthDigests.Remove($expiredAuthDigest)
+                        }
+                    }
+                }
+            }
 
             $messageId = [string]$msg.MessageId
 

@@ -10,6 +10,7 @@
 - Optimized sender/receiver hot paths with lower-overhead timeout/progress/update loops while preserving wire behavior.
 - Reduced protocol wait-loop overhead by centralizing poll backoff jitter generation in a lightweight in-process helper.
 - Refined protocol wait-loop exception scoping by narrowing parse/read try blocks, surfacing listener initialization fallback diagnostics, and rethrowing unexpected envelope-processing exceptions.
+- Implemented opt-in authenticated mode (`-AuthKey`) with per-message HMAC signatures, nonce-bound session context, deterministic mixed-mode rejection behavior, and replay-digest filtering in wait handling.
 - Release notes metadata links to [RELEASE-NOTES.md for the `1.0.3` Git tag](https://github.com/Synchronos/KlipAround/blob/1.0.3/RELEASE-NOTES.md).
 
 ## 1.0.2
